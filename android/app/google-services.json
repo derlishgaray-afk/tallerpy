@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "234633564669",
+    "project_id": "taller-mecanico-782ec",
+    "storage_bucket": "taller-mecanico-782ec.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:234633564669:android:c82e62026952e2440d4994",
+        "android_client_info": {
+          "package_name": "com.example.taller_mecanico"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCVb5A7uCcWUIK9kDMi6BOg31IUtzyBlNw"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
