@@ -8,7 +8,7 @@ import 'package:flutter/services.dart';
 import 'package:intl/intl.dart';
 import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
-import 'package:printing/printing.dart';
+import 'package:share_plus/share_plus.dart';
 import 'package:speech_to_text/speech_to_text.dart' as stt;
 
 import '../../utils/speech_web.dart';
@@ -1138,7 +1138,18 @@ class _BudgetFormScreenState extends State<BudgetFormScreen> {
           .trim()
           .replaceAll(RegExp(r'[^a-zA-Z0-9]+'), '_');
       final file = 'presupuesto_${safeCustomer}_${DateFormat('yyyyMMdd').format(_date)}.pdf';
-      await Printing.sharePdf(bytes: bytes, filename: file);
+      await SharePlus.instance.share(
+        ShareParams(
+          files: [
+            XFile.fromData(bytes, mimeType: 'application/pdf'),
+          ],
+          fileNameOverrides: [file],
+          title: file,
+          subject: file,
+          downloadFallbackEnabled: true,
+          mailToFallbackEnabled: true,
+        ),
+      );
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(

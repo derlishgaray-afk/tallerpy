@@ -47,7 +47,7 @@ dependencies:
   intl: ^0.19.0
   speech_to_text: ^7.0.0
   pdf: ^3.11.1
-  printing: ^5.13.4
+  share_plus: ^12.0.1
 
 dev_dependencies:
   flutter_test:
@@ -59,6 +59,20 @@ dev_dependencies:
   # package. See that file for information about deactivating specific lint
   # rules and activating additional ones.
   flutter_lints: ^6.0.0
+  flutter_launcher_icons: ^0.14.4
+
+flutter_launcher_icons:
+  android: true
+  ios: true
+  image_path: "assets/icons/app_icon.png"
+  min_sdk_android: 21
+  remove_alpha_ios: true
+  background_color_ios: "#E5E5E5"
+  web:
+    generate: true
+    image_path: "assets/icons/app_icon.png"
+    background_color: "#E5E5E5"
+    theme_color: "#0F172A"
 
 # For information on the generic Dart part of this file, see the
 # following page: https://dart.dev/tools/pub/pubspec

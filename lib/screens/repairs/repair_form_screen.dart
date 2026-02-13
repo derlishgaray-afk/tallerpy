@@ -1,4 +1,4 @@
-﻿import 'dart:async';
+import 'dart:async';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
@@ -6,6 +6,9 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:intl/intl.dart';
+import 'package:pdf/pdf.dart';
+import 'package:pdf/widgets.dart' as pw;
+import 'package:share_plus/share_plus.dart';
 
 // Web speech (JS)
 import '/utils/speech_web.dart';
@@ -55,6 +58,7 @@ class _RepairFormScreenState extends State<RepairFormScreen> {
 
   String _status = 'Abierta';
   bool _saving = false;
+  bool _sharing = false;
   // ===== Anti-duplicado (final repetido) =====
   String _lastFinalNorm = '';
   int _lastFinalMs = 0;
@@ -77,6 +81,7 @@ class _RepairFormScreenState extends State<RepairFormScreen> {
 
   // ===== Money formatter (Paraguay) =====
   final NumberFormat _gsFmt = NumberFormat.decimalPattern('es_PY');
+  final DateFormat _dateTimeFmt = DateFormat('dd/MM/yyyy HH:mm');
 
   // ===== Dictado =====
   DictationMode _mode = DictationMode.add;
@@ -460,6 +465,316 @@ class _RepairFormScreenState extends State<RepairFormScreen> {
     _resetDictationBase();
   }
 
+  bool get _canSharePdf =>
+      !_saving && !_sharing && _status.trim().toLowerCase() == 'terminada';
+
+  DateTime? _parseDate(dynamic v) {
+    if (v is Timestamp) return v.toDate();
+    if (v is DateTime) return v;
+    if (v is String) return DateTime.tryParse(v);
+    return null;
+  }
+
+  String _fmtDateTime(dynamic v) {
+    final d = _parseDate(v);
+    if (d == null) return '';
+    return _dateTimeFmt.format(d);
+  }
+
+  String _kmForPdf(String rawKm) {
+    final raw = rawKm.trim();
+    if (raw.isEmpty) return '';
+    final digits = raw.replaceAll(RegExp(r'[^0-9]'), '');
+    if (digits.isEmpty) return raw;
+    final n = int.tryParse(digits);
+    if (n == null) return raw;
+    return '${_gsFmt.format(n)} km';
+  }
+
+  String _safeFileToken(String input, {required String fallback}) {
+    final token = input.trim().replaceAll(RegExp(r'[^a-zA-Z0-9]+'), '_');
+    final clean = token.replaceAll(RegExp(r'^_+|_+$'), '');
+    return clean.isEmpty ? fallback : clean;
+  }
+
+  Future<Map<String, dynamic>> _loadWorkshopProfile() async {
+    final snap = await FirebaseFirestore.instance
+        .collection('users')
+        .doc(_uid)
+        .get();
+    final data = snap.data() ?? {};
+    final profile = (data['profile'] as Map<String, dynamic>?) ?? {};
+    return {
+      'name': (profile['name'] ?? '').toString().trim(),
+      'owner': (profile['owner'] ?? '').toString().trim(),
+      'address': (profile['address'] ?? '').toString().trim(),
+      'phone': (profile['phone'] ?? '').toString().trim(),
+      'ruc': (profile['ruc'] ?? '').toString().trim(),
+    };
+  }
+
+  Future<String> _resolveCustomerName() async {
+    final fromWidget = (widget.customerName ?? '').trim();
+    if (fromWidget.isNotEmpty) return fromWidget;
+
+    final snap = await FirebaseFirestore.instance
+        .collection('users')
+        .doc(_uid)
+        .collection('customers')
+        .doc(widget.customerId)
+        .get();
+    final data = snap.data() ?? {};
+    final fromDb = (data['name'] ?? '').toString().trim();
+    return fromDb.isEmpty ? 'Cliente' : fromDb;
+  }
+
+  pw.Widget _pdfInfoLine(String label, String value) {
+    if (value.trim().isEmpty) return pw.SizedBox();
+    return pw.Padding(
+      padding: const pw.EdgeInsets.only(bottom: 4),
+      child: pw.Row(
+        crossAxisAlignment: pw.CrossAxisAlignment.start,
+        children: [
+          pw.SizedBox(
+            width: 110,
+            child: pw.Text(
+              '$label:',
+              style: pw.TextStyle(fontWeight: pw.FontWeight.bold),
+            ),
+          ),
+          pw.Expanded(child: pw.Text(value)),
+        ],
+      ),
+    );
+  }
+
+  Future<Uint8List> _buildPdfBytes({
+    required Map<String, dynamic> profile,
+    required String customerName,
+  }) async {
+    final doc = pw.Document();
+    final workshopName = (profile['name'] ?? '').toString().trim();
+    final owner = (profile['owner'] ?? '').toString().trim();
+    final address = (profile['address'] ?? '').toString().trim();
+    final phone = (profile['phone'] ?? '').toString().trim();
+    final ruc = (profile['ruc'] ?? '').toString().trim();
+
+    final title = _title.text.trim();
+    final desc = _desc.text.trim();
+    final status = _status.trim().isEmpty ? 'Abierta' : _status.trim();
+    final km = _kmForPdf(_km.text);
+    final labor = _parseGs(_labor.text);
+    final parts = _parseGs(_parts.text);
+    final total = labor + parts;
+    final moneyFmt = NumberFormat.decimalPattern('es_PY');
+    final issuedAt = _dateTimeFmt.format(DateTime.now());
+    final createdAt = _fmtDateTime(widget.initial?['createdAt']);
+    final updatedAt = _fmtDateTime(widget.initial?['updatedAt']);
+    final vehicle = widget.vehicleTitle.trim().isEmpty
+        ? 'Vehiculo'
+        : widget.vehicleTitle.trim();
+    final customer = customerName.trim().isEmpty
+        ? 'Cliente'
+        : customerName.trim();
+
+    doc.addPage(
+      pw.MultiPage(
+        pageFormat: PdfPageFormat.a4,
+        margin: const pw.EdgeInsets.all(24),
+        build: (_) => [
+          pw.Container(
+            padding: const pw.EdgeInsets.all(16),
+            decoration: pw.BoxDecoration(
+              color: PdfColor.fromHex('#0F172A'),
+              borderRadius: pw.BorderRadius.circular(10),
+            ),
+            child: pw.Column(
+              crossAxisAlignment: pw.CrossAxisAlignment.start,
+              children: [
+                pw.Text(
+                  workshopName.isEmpty ? 'Mi Taller' : workshopName,
+                  style: pw.TextStyle(
+                    color: PdfColors.white,
+                    fontSize: 22,
+                    fontWeight: pw.FontWeight.bold,
+                  ),
+                ),
+                pw.SizedBox(height: 6),
+                if (owner.isNotEmpty)
+                  pw.Text(
+                    'Propietario: $owner',
+                    style: const pw.TextStyle(color: PdfColors.white),
+                  ),
+                if (address.isNotEmpty)
+                  pw.Text(
+                    'Direccion: $address',
+                    style: const pw.TextStyle(color: PdfColors.white),
+                  ),
+                if (phone.isNotEmpty)
+                  pw.Text(
+                    'Telefono: $phone',
+                    style: const pw.TextStyle(color: PdfColors.white),
+                  ),
+                if (ruc.isNotEmpty)
+                  pw.Text(
+                    'RUC/CI: $ruc',
+                    style: const pw.TextStyle(color: PdfColors.white),
+                  ),
+              ],
+            ),
+          ),
+          pw.SizedBox(height: 18),
+          pw.Row(
+            mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
+            children: [
+              pw.Text(
+                'REPARACION',
+                style: pw.TextStyle(
+                  fontSize: 18,
+                  fontWeight: pw.FontWeight.bold,
+                ),
+              ),
+              pw.Container(
+                padding: const pw.EdgeInsets.symmetric(
+                  horizontal: 10,
+                  vertical: 6,
+                ),
+                decoration: pw.BoxDecoration(
+                  borderRadius: pw.BorderRadius.circular(999),
+                  border: pw.Border.all(color: PdfColor.fromHex('#334155')),
+                ),
+                child: pw.Text('Estado: $status'),
+              ),
+            ],
+          ),
+          pw.SizedBox(height: 12),
+          pw.Container(
+            padding: const pw.EdgeInsets.all(12),
+            decoration: pw.BoxDecoration(
+              borderRadius: pw.BorderRadius.circular(8),
+              color: PdfColor.fromHex('#F8FAFC'),
+            ),
+            child: pw.Column(
+              crossAxisAlignment: pw.CrossAxisAlignment.start,
+              children: [
+                _pdfInfoLine('Emitido', issuedAt),
+                _pdfInfoLine('Cliente', customer),
+                _pdfInfoLine('Vehiculo', vehicle),
+                _pdfInfoLine('Km', km),
+                _pdfInfoLine('Creada', createdAt),
+                _pdfInfoLine('Actualizada', updatedAt),
+              ],
+            ),
+          ),
+          pw.SizedBox(height: 12),
+          pw.Container(
+            padding: const pw.EdgeInsets.all(12),
+            decoration: pw.BoxDecoration(
+              borderRadius: pw.BorderRadius.circular(8),
+              border: pw.Border.all(color: PdfColor.fromHex('#CBD5E1')),
+            ),
+            child: pw.Column(
+              crossAxisAlignment: pw.CrossAxisAlignment.start,
+              children: [
+                pw.Text(
+                  title.isEmpty ? 'Sin titulo' : title,
+                  style: pw.TextStyle(
+                    fontSize: 15,
+                    fontWeight: pw.FontWeight.bold,
+                  ),
+                ),
+                pw.SizedBox(height: 8),
+                pw.Text(desc.isEmpty ? '-' : desc),
+              ],
+            ),
+          ),
+          pw.SizedBox(height: 12),
+          pw.Container(
+            padding: const pw.EdgeInsets.all(12),
+            decoration: pw.BoxDecoration(
+              borderRadius: pw.BorderRadius.circular(8),
+              border: pw.Border.all(color: PdfColor.fromHex('#CBD5E1')),
+            ),
+            child: pw.Column(
+              crossAxisAlignment: pw.CrossAxisAlignment.start,
+              children: [
+                pw.Text(
+                  'Costos (Gs.)',
+                  style: pw.TextStyle(fontWeight: pw.FontWeight.bold),
+                ),
+                pw.SizedBox(height: 8),
+                _pdfInfoLine('Repuestos', moneyFmt.format(parts.round())),
+                _pdfInfoLine('Mano de obra', moneyFmt.format(labor.round())),
+                pw.Divider(),
+                _pdfInfoLine('TOTAL', moneyFmt.format(total.round())),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+
+    return doc.save();
+  }
+
+  Future<void> _sharePdf() async {
+    if (!_canSharePdf) return;
+
+    final title = _title.text.trim();
+    if (title.isEmpty) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('El titulo es obligatorio')));
+      return;
+    }
+
+    final kmTxt = _km.text.trim();
+    final kmDigits = kmTxt.replaceAll(RegExp(r'[^0-9]'), '');
+    if (kmTxt.isNotEmpty && kmDigits.isEmpty) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Km invalido')));
+      return;
+    }
+
+    setState(() => _sharing = true);
+
+    try {
+      final profile = await _loadWorkshopProfile();
+      final customerName = await _resolveCustomerName();
+      final bytes = await _buildPdfBytes(
+        profile: profile,
+        customerName: customerName,
+      );
+      final safeVehicle = _safeFileToken(
+        widget.vehicleTitle,
+        fallback: 'vehiculo',
+      );
+      final safeTitle = _safeFileToken(title, fallback: 'reparacion');
+      final fileDate = DateFormat('yyyyMMdd_HHmm').format(DateTime.now());
+      final file = 'reparacion_${safeVehicle}_${safeTitle}_$fileDate.pdf';
+      await SharePlus.instance.share(
+        ShareParams(
+          files: [
+            XFile.fromData(bytes, mimeType: 'application/pdf'),
+          ],
+          fileNameOverrides: [file],
+          title: file,
+          subject: file,
+          downloadFallbackEnabled: true,
+          mailToFallbackEnabled: true,
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('No se pudo compartir PDF: $e')));
+    } finally {
+      if (mounted) setState(() => _sharing = false);
+    }
+  }
+
   // ===== Save =====
   Future<void> _save() async {
     final title = _title.text.trim();
@@ -533,11 +848,28 @@ class _RepairFormScreenState extends State<RepairFormScreen> {
     final editing = widget.repairId != null;
 
     final micEnabled =
-        !_saving && (kIsWeb ? SpeechWeb.isSupported() : _mobileReady);
+        !_saving &&
+        !_sharing &&
+        (kIsWeb ? SpeechWeb.isSupported() : _mobileReady);
 
     return Scaffold(
       appBar: AppBar(
         title: Text(editing ? 'Editar reparación' : 'Nueva reparación'),
+        actions: [
+          IconButton(
+            tooltip: _canSharePdf
+                ? 'Compartir PDF'
+                : 'Disponible al estado Terminada',
+            onPressed: _canSharePdf ? _sharePdf : null,
+            icon: _sharing
+                ? const SizedBox(
+                    height: 18,
+                    width: 18,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Icon(Icons.picture_as_pdf_outlined),
+          ),
+        ],
         bottom: PreferredSize(
           preferredSize: const Size.fromHeight(36),
           child: Padding(
@@ -800,12 +1132,14 @@ class _DescFieldWithMicState extends State<_DescFieldWithMic>
       vsync: this,
       duration: const Duration(milliseconds: 900),
     );
-    _scale = Tween<double>(begin: 0.85, end: 1.2).animate(
-      CurvedAnimation(parent: _pulse, curve: Curves.easeInOut),
-    );
-    _opacity = Tween<double>(begin: 0.4, end: 1.0).animate(
-      CurvedAnimation(parent: _pulse, curve: Curves.easeInOut),
-    );
+    _scale = Tween<double>(
+      begin: 0.85,
+      end: 1.2,
+    ).animate(CurvedAnimation(parent: _pulse, curve: Curves.easeInOut));
+    _opacity = Tween<double>(
+      begin: 0.4,
+      end: 1.0,
+    ).animate(CurvedAnimation(parent: _pulse, curve: Curves.easeInOut));
     if (widget.listening) {
       _pulse.repeat(reverse: true);
     }
@@ -830,8 +1164,9 @@ class _DescFieldWithMicState extends State<_DescFieldWithMic>
 
   @override
   Widget build(BuildContext context) {
-    final modeText =
-        widget.mode == DictationMode.add ? 'Agregar' : 'Reemplazar';
+    final modeText = widget.mode == DictationMode.add
+        ? 'Agregar'
+        : 'Reemplazar';
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -852,8 +1187,9 @@ class _DescFieldWithMicState extends State<_DescFieldWithMic>
                   icon: const Icon(Icons.backspace_outlined),
                 ),
                 IconButton(
-                  tooltip:
-                      widget.listening ? 'Detener dictado' : 'Dictar por voz',
+                  tooltip: widget.listening
+                      ? 'Detener dictado'
+                      : 'Dictar por voz',
                   onPressed: widget.micEnabled ? widget.onMicTap : null,
                   icon: Icon(
                     widget.listening ? Icons.mic : Icons.mic_none,
@@ -910,4 +1246,3 @@ class _DescFieldWithMicState extends State<_DescFieldWithMic>
     );
   }
 }
-

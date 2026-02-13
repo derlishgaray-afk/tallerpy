@@ -2,9 +2,8 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
-import 'customer_vehicles_screen.dart';
 import 'customer_form_screen.dart';
-import '../budgets/budgets_screen.dart';
+import 'customer_vehicles_screen.dart';
 
 class CustomerDetailScreen extends StatelessWidget {
   final String customerId;
@@ -78,18 +77,16 @@ class CustomerDetailScreen extends StatelessWidget {
             child: ListView(
               children: [
                 _InfoRow(label: 'Nombre', value: name),
-                _InfoRow(label: 'Teléfono', value: phone),
+                _InfoRow(label: 'Telefono', value: phone),
                 _InfoRow(label: 'RUC/CI', value: ruc),
-                _InfoRow(label: 'Dirección', value: address),
+                _InfoRow(label: 'Direccion', value: address),
                 _InfoRow(label: 'Observaciones', value: notes),
                 const SizedBox(height: 16),
-
-                // ✅ Vehículos (funcional)
                 SizedBox(
                   width: double.infinity,
                   child: ElevatedButton.icon(
                     icon: const Icon(Icons.directions_car_filled_outlined),
-                    label: const Text('Vehículos'),
+                    label: const Text('Vehiculos'),
                     onPressed: () {
                       Navigator.push(
                         context,
@@ -103,38 +100,14 @@ class CustomerDetailScreen extends StatelessWidget {
                     },
                   ),
                 ),
-
                 const SizedBox(height: 12),
-
-                SizedBox(
-                  width: double.infinity,
-                  child: OutlinedButton.icon(
-                    icon: const Icon(Icons.receipt_long_outlined),
-                    label: const Text('Presupuestos'),
-                    onPressed: () {
-                      Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                          builder: (_) => BudgetsScreen(
-                            customerId: customerId,
-                            customerName: name,
-                          ),
-                        ),
-                      );
-                    },
-                  ),
-                ),
-                const SizedBox(height: 12),
-                SizedBox(
-                  width: double.infinity,
-                  child: OutlinedButton.icon(
-                    icon: const Icon(Icons.build_circle_outlined),
-                    label: const Text('Reparaciones / Órdenes (pendiente)'),
-                    onPressed: () {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(content: Text('Pendiente')),
-                      );
-                    },
+                Card(
+                  child: Padding(
+                    padding: const EdgeInsets.all(12),
+                    child: Text(
+                      'Presupuestos y Reparaciones se gestionan desde el menu principal.',
+                      style: Theme.of(context).textTheme.bodyMedium,
+                    ),
                   ),
                 ),
               ],
@@ -154,7 +127,7 @@ class _InfoRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final v = value.trim().isEmpty ? '—' : value.trim();
+    final v = value.trim().isEmpty ? '-' : value.trim();
     return Padding(
       padding: const EdgeInsets.only(bottom: 10),
       child: Row(
@@ -173,3 +146,4 @@ class _InfoRow extends StatelessWidget {
     );
   }
 }
+
