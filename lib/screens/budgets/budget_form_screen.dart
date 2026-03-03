@@ -40,7 +40,19 @@ class BudgetFormScreen extends StatefulWidget {
   State<BudgetFormScreen> createState() => _BudgetFormScreenState();
 }
 
-enum DictationMode { add, replace }
+class _PartItemInput {
+  final TextEditingController nameCtrl;
+  final TextEditingController unitPriceCtrl;
+
+  _PartItemInput({String name = '', String unitPrice = ''})
+    : nameCtrl = TextEditingController(text: name),
+      unitPriceCtrl = TextEditingController(text: unitPrice);
+
+  void dispose() {
+    nameCtrl.dispose();
+    unitPriceCtrl.dispose();
+  }
+}
 
 class _LocalePick {
   final String? localeId;
@@ -49,11 +61,15 @@ class _LocalePick {
 }
 
 class _BudgetFormScreenState extends State<BudgetFormScreen> {
+  final _title = TextEditingController();
   final _problem = TextEditingController();
   final _days = TextEditingController();
   final _parts = TextEditingController();
   final _labor = TextEditingController();
   final _obs = TextEditingController();
+
+  bool _usePartsItems = false;
+  final List<_PartItemInput> _partsItems = [];
 
   String? _customerId;
   String _customerName = '';
@@ -74,8 +90,8 @@ class _BudgetFormScreenState extends State<BudgetFormScreen> {
   final DateFormat _dateFmt = DateFormat('dd/MM/yyyy');
 
   // Dictado
-  DictationMode _mode = DictationMode.add;
   bool _listening = false;
+  TextEditingController? _dictTarget;
   String _dictBase = '';
   String _lastPartial = '';
   String _lastFinalNorm = '';
@@ -97,11 +113,11 @@ class _BudgetFormScreenState extends State<BudgetFormScreen> {
       .doc(_uid)
       .collection('budgets');
 
-  CollectionReference<Map<String, dynamic>> get _customersCol => FirebaseFirestore
-      .instance
-      .collection('users')
-      .doc(_uid)
-      .collection('customers');
+  CollectionReference<Map<String, dynamic>> get _customersCol =>
+      FirebaseFirestore.instance
+          .collection('users')
+          .doc(_uid)
+          .collection('customers');
 
   CollectionReference<Map<String, dynamic>> _vehiclesCol(String customerId) {
     return _customersCol.doc(customerId).collection('vehicles');
@@ -121,11 +137,13 @@ class _BudgetFormScreenState extends State<BudgetFormScreen> {
         _firstNotEmpty(widget.initialVehicleTitle, d['vehicleTitle']) ?? '';
 
     _date = _parseDate(d['date']) ?? DateTime.now();
+    _title.text = (d['title'] ?? '').toString();
     _problem.text = (d['problemDescription'] ?? '').toString();
     _days.text = (d['estimatedDays'] ?? '').toString();
     _parts.text = _numToGsText(d['partsEstimated']);
     _labor.text = _numToGsText(d['laborEstimated']);
     _obs.text = (d['observations'] ?? '').toString();
+    _loadPartsItemsFromInitial(d['partsItems']);
     final s = (d['status'] ?? 'Pendiente').toString().trim();
     _status = s.isEmpty ? 'Pendiente' : s;
 
@@ -141,12 +159,22 @@ class _BudgetFormScreenState extends State<BudgetFormScreen> {
         onStatus: (status) {
           if (!mounted) return;
           if (status == 'stopped' || status == 'error') {
-            setState(() => _listening = false);
+            setState(() {
+              _listening = false;
+              _dictTarget = null;
+              _dictBase = '';
+              _lastPartial = '';
+            });
           }
         },
         onError: (msg) {
           if (!mounted) return;
-          setState(() => _listening = false);
+          setState(() {
+            _listening = false;
+            _dictTarget = null;
+            _dictBase = '';
+            _lastPartial = '';
+          });
           ScaffoldMessenger.of(
             context,
           ).showSnackBar(SnackBar(content: Text('Dictado (Web): $msg')));
@@ -165,11 +193,15 @@ class _BudgetFormScreenState extends State<BudgetFormScreen> {
     } else {
       _speechMobile.stop();
     }
+    _title.dispose();
     _problem.dispose();
     _days.dispose();
     _parts.dispose();
     _labor.dispose();
     _obs.dispose();
+    for (final item in _partsItems) {
+      item.dispose();
+    }
     super.dispose();
   }
 
@@ -189,12 +221,27 @@ class _BudgetFormScreenState extends State<BudgetFormScreen> {
     return null;
   }
 
+  void _loadPartsItemsFromInitial(dynamic raw) {
+    if (raw is! List) return;
+    for (final e in raw) {
+      if (e is! Map) continue;
+      final name = (e['name'] ?? '').toString().trim();
+      final unitPriceText = _numToGsText(e['unitPrice']);
+      if (name.isEmpty && unitPriceText.isEmpty) continue;
+      _partsItems.add(_PartItemInput(name: name, unitPrice: unitPriceText));
+    }
+    if (_partsItems.isNotEmpty) {
+      _usePartsItems = true;
+      _syncPartsTotalFromItems();
+    }
+  }
+
   String _vehicleTitleFromData(Map<String, dynamic> d) {
     final brand = (d['brand'] ?? '').toString().trim();
     final model = (d['model'] ?? '').toString().trim();
     final plate = (d['plate'] ?? '').toString().trim();
     final base = [brand, model].where((e) => e.isNotEmpty).join(' ').trim();
-    if (plate.isEmpty) return base.isEmpty ? 'Vehículo' : base;
+    if (plate.isEmpty) return base.isEmpty ? 'Veh\u00edculo' : base;
     return base.isEmpty ? plate : '$base - $plate';
   }
 
@@ -206,7 +253,9 @@ class _BudgetFormScreenState extends State<BudgetFormScreen> {
         _customerName = (d['name'] ?? 'Cliente').toString().trim();
       }
     }
-    if (_customerId != null && _vehicleId != null && _vehicleTitle.trim().isEmpty) {
+    if (_customerId != null &&
+        _vehicleId != null &&
+        _vehicleTitle.trim().isEmpty) {
       final s = await _vehiclesCol(_customerId!).doc(_vehicleId).get();
       final d = s.data();
       if (d != null && mounted) {
@@ -222,9 +271,9 @@ class _BudgetFormScreenState extends State<BudgetFormScreen> {
   }) async {
     if (mounted) setState(() => _loadingVehicles = true);
     try {
-      final snap = await _vehiclesCol(customerId)
-          .orderBy('updatedAt', descending: true)
-          .get();
+      final snap = await _vehiclesCol(
+        customerId,
+      ).orderBy('updatedAt', descending: true).get();
       if (!mounted) return;
       String? selectedId = keepSelection ? _vehicleId : null;
       String selectedTitle = keepSelection ? _vehicleTitle : '';
@@ -272,78 +321,89 @@ class _BudgetFormScreenState extends State<BudgetFormScreen> {
     if (!mounted) return;
     if (docs.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('No hay clientes registrados todavía.')),
+        const SnackBar(
+          content: Text('No hay clientes registrados todav\u00eda.'),
+        ),
       );
       return;
     }
 
-    final picked = await showDialog<QueryDocumentSnapshot<Map<String, dynamic>>>(
-      context: context,
-      builder: (ctx) {
-        String q = '';
-        return StatefulBuilder(
-          builder: (ctx, setLocal) {
-            final filtered = docs.where((doc) {
-              final d = doc.data();
-              final hay = [
-                (d['name'] ?? '').toString(),
-                (d['phone'] ?? '').toString(),
-                (d['ruc'] ?? '').toString(),
-              ].join(' ').toLowerCase();
-              return hay.contains(q.toLowerCase());
-            }).toList();
+    final picked =
+        await showDialog<QueryDocumentSnapshot<Map<String, dynamic>>>(
+          context: context,
+          builder: (ctx) {
+            String q = '';
+            return StatefulBuilder(
+              builder: (ctx, setLocal) {
+                final filtered = docs.where((doc) {
+                  final d = doc.data();
+                  final hay = [
+                    (d['name'] ?? '').toString(),
+                    (d['phone'] ?? '').toString(),
+                    (d['ruc'] ?? '').toString(),
+                  ].join(' ').toLowerCase();
+                  return hay.contains(q.toLowerCase());
+                }).toList();
 
-            return AlertDialog(
-              title: const Text('Seleccionar cliente'),
-              content: SizedBox(
-                width: 500,
-                height: 420,
-                child: Column(
-                  children: [
-                    TextField(
-                      decoration: const InputDecoration(
-                        labelText: 'Buscar cliente',
-                        prefixIcon: Icon(Icons.search),
-                        border: OutlineInputBorder(),
-                      ),
-                      onChanged: (v) => setLocal(() => q = v),
+                return AlertDialog(
+                  title: const Text('Seleccionar cliente'),
+                  content: SizedBox(
+                    width: 500,
+                    height: 420,
+                    child: Column(
+                      children: [
+                        TextField(
+                          decoration: const InputDecoration(
+                            labelText: 'Buscar cliente',
+                            prefixIcon: Icon(Icons.search),
+                            border: OutlineInputBorder(),
+                          ),
+                          onChanged: (v) => setLocal(() => q = v),
+                        ),
+                        const SizedBox(height: 10),
+                        Expanded(
+                          child: filtered.isEmpty
+                              ? const Center(child: Text('Sin resultados'))
+                              : ListView.builder(
+                                  itemCount: filtered.length,
+                                  itemBuilder: (_, i) {
+                                    final doc = filtered[i];
+                                    final d = doc.data();
+                                    final name = (d['name'] ?? 'Cliente')
+                                        .toString()
+                                        .trim();
+                                    final phone = (d['phone'] ?? '')
+                                        .toString()
+                                        .trim();
+                                    return ListTile(
+                                      leading: const Icon(
+                                        Icons.people_alt_outlined,
+                                      ),
+                                      title: Text(
+                                        name.isEmpty ? 'Cliente' : name,
+                                      ),
+                                      subtitle: phone.isEmpty
+                                          ? null
+                                          : Text(phone),
+                                      onTap: () => Navigator.pop(ctx, doc),
+                                    );
+                                  },
+                                ),
+                        ),
+                      ],
                     ),
-                    const SizedBox(height: 10),
-                    Expanded(
-                      child: filtered.isEmpty
-                          ? const Center(child: Text('Sin resultados'))
-                          : ListView.builder(
-                              itemCount: filtered.length,
-                              itemBuilder: (_, i) {
-                                final doc = filtered[i];
-                                final d = doc.data();
-                                final name = (d['name'] ?? 'Cliente')
-                                    .toString()
-                                    .trim();
-                                final phone = (d['phone'] ?? '').toString().trim();
-                                return ListTile(
-                                  leading: const Icon(Icons.people_alt_outlined),
-                                  title: Text(name.isEmpty ? 'Cliente' : name),
-                                  subtitle: phone.isEmpty ? null : Text(phone),
-                                  onTap: () => Navigator.pop(ctx, doc),
-                                );
-                              },
-                            ),
+                  ),
+                  actions: [
+                    TextButton(
+                      onPressed: () => Navigator.pop(ctx),
+                      child: const Text('Cancelar'),
                     ),
                   ],
-                ),
-              ),
-              actions: [
-                TextButton(
-                  onPressed: () => Navigator.pop(ctx),
-                  child: const Text('Cancelar'),
-                ),
-              ],
+                );
+              },
             );
           },
         );
-      },
-    );
 
     if (picked == null) return;
     final d = picked.data();
@@ -362,7 +422,7 @@ class _BudgetFormScreenState extends State<BudgetFormScreen> {
     if (widget.lockVehicle || _saving || _approving) return;
     if (_customerId == null) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Primero seleccioná un cliente.')),
+        const SnackBar(content: Text('Primero seleccion\u00e1 un cliente.')),
       );
       return;
     }
@@ -373,74 +433,77 @@ class _BudgetFormScreenState extends State<BudgetFormScreen> {
     if (!mounted) return;
     if (_vehicleDocs.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Este cliente no tiene vehículos.')),
+        const SnackBar(content: Text('Este cliente no tiene veh\u00edculos.')),
       );
       return;
     }
 
-    final picked = await showDialog<QueryDocumentSnapshot<Map<String, dynamic>>>(
-      context: context,
-      builder: (ctx) {
-        String q = '';
-        return StatefulBuilder(
-          builder: (ctx, setLocal) {
-            final filtered = _vehicleDocs.where((doc) {
-              final d = doc.data();
-              final hay = [
-                (d['brand'] ?? '').toString(),
-                (d['model'] ?? '').toString(),
-                (d['plate'] ?? '').toString(),
-                (d['year'] ?? '').toString(),
-              ].join(' ').toLowerCase();
-              return hay.contains(q.toLowerCase());
-            }).toList();
-            return AlertDialog(
-              title: const Text('Seleccionar vehículo'),
-              content: SizedBox(
-                width: 500,
-                height: 420,
-                child: Column(
-                  children: [
-                    TextField(
-                      decoration: const InputDecoration(
-                        labelText: 'Buscar vehículo',
-                        prefixIcon: Icon(Icons.search),
-                        border: OutlineInputBorder(),
-                      ),
-                      onChanged: (v) => setLocal(() => q = v),
+    final picked =
+        await showDialog<QueryDocumentSnapshot<Map<String, dynamic>>>(
+          context: context,
+          builder: (ctx) {
+            String q = '';
+            return StatefulBuilder(
+              builder: (ctx, setLocal) {
+                final filtered = _vehicleDocs.where((doc) {
+                  final d = doc.data();
+                  final hay = [
+                    (d['brand'] ?? '').toString(),
+                    (d['model'] ?? '').toString(),
+                    (d['plate'] ?? '').toString(),
+                    (d['year'] ?? '').toString(),
+                  ].join(' ').toLowerCase();
+                  return hay.contains(q.toLowerCase());
+                }).toList();
+                return AlertDialog(
+                  title: const Text('Seleccionar veh\u00edculo'),
+                  content: SizedBox(
+                    width: 500,
+                    height: 420,
+                    child: Column(
+                      children: [
+                        TextField(
+                          decoration: const InputDecoration(
+                            labelText: 'Buscar veh\u00edculo',
+                            prefixIcon: Icon(Icons.search),
+                            border: OutlineInputBorder(),
+                          ),
+                          onChanged: (v) => setLocal(() => q = v),
+                        ),
+                        const SizedBox(height: 10),
+                        Expanded(
+                          child: filtered.isEmpty
+                              ? const Center(child: Text('Sin resultados'))
+                              : ListView.builder(
+                                  itemCount: filtered.length,
+                                  itemBuilder: (_, i) {
+                                    final doc = filtered[i];
+                                    return ListTile(
+                                      leading: const Icon(
+                                        Icons.directions_car_filled_outlined,
+                                      ),
+                                      title: Text(
+                                        _vehicleTitleFromData(doc.data()),
+                                      ),
+                                      onTap: () => Navigator.pop(ctx, doc),
+                                    );
+                                  },
+                                ),
+                        ),
+                      ],
                     ),
-                    const SizedBox(height: 10),
-                    Expanded(
-                      child: filtered.isEmpty
-                          ? const Center(child: Text('Sin resultados'))
-                          : ListView.builder(
-                              itemCount: filtered.length,
-                              itemBuilder: (_, i) {
-                                final doc = filtered[i];
-                                return ListTile(
-                                  leading: const Icon(
-                                    Icons.directions_car_filled_outlined,
-                                  ),
-                                  title: Text(_vehicleTitleFromData(doc.data())),
-                                  onTap: () => Navigator.pop(ctx, doc),
-                                );
-                              },
-                            ),
+                  ),
+                  actions: [
+                    TextButton(
+                      onPressed: () => Navigator.pop(ctx),
+                      child: const Text('Cancelar'),
                     ),
                   ],
-                ),
-              ),
-              actions: [
-                TextButton(
-                  onPressed: () => Navigator.pop(ctx),
-                  child: const Text('Cancelar'),
-                ),
-              ],
+                );
+              },
             );
           },
         );
-      },
-    );
 
     if (picked == null) return;
     setState(() {
@@ -481,6 +544,66 @@ class _BudgetFormScreenState extends State<BudgetFormScreen> {
     return _gsFmt.format(n.round());
   }
 
+  void _addPartsItem() {
+    setState(() => _partsItems.add(_PartItemInput()));
+  }
+
+  void _removePartsItem(int index) {
+    if (index < 0 || index >= _partsItems.length) return;
+    final item = _partsItems[index];
+    if (_isDictating(item.nameCtrl)) {
+      unawaited(_stopDictation());
+    }
+    setState(() {
+      _partsItems.removeAt(index);
+      item.dispose();
+      _syncPartsTotalFromItems();
+    });
+  }
+
+  void _onPartsItemPriceChanged(_PartItemInput item, String raw) {
+    final formatted = _formatGsFromDigits(raw);
+    if (formatted != raw) {
+      item.unitPriceCtrl.value = item.unitPriceCtrl.value.copyWith(
+        text: formatted,
+        selection: TextSelection.collapsed(offset: formatted.length),
+      );
+    }
+    _syncPartsTotalFromItems();
+  }
+
+  void _syncPartsTotalFromItems() {
+    if (!_usePartsItems) return;
+    num sum = 0;
+    for (final item in _partsItems) {
+      sum += _parseGs(item.unitPriceCtrl.text);
+    }
+    _parts.text = _gsFmt.format(sum.round());
+  }
+
+  List<Map<String, dynamic>>? _collectPartsItems({required bool validate}) {
+    final result = <Map<String, dynamic>>[];
+    for (var i = 0; i < _partsItems.length; i++) {
+      final item = _partsItems[i];
+      final name = item.nameCtrl.text.trim();
+      final unit = _parseGs(item.unitPriceCtrl.text);
+      final allEmpty = name.isEmpty && unit <= 0;
+      if (allEmpty) continue;
+      if (validate && (name.isEmpty || unit <= 0)) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              'Complet\u00e1 correctamente el repuesto #${i + 1} (nombre y precio).',
+            ),
+          ),
+        );
+        return null;
+      }
+      result.add({'name': name, 'unitPrice': unit});
+    }
+    return result;
+  }
+
   int _parseDays() {
     final digits = _days.text.trim().replaceAll(RegExp(r'[^0-9]'), '');
     if (digits.isEmpty) return 0;
@@ -496,11 +619,23 @@ class _BudgetFormScreenState extends State<BudgetFormScreen> {
       final ok = await _speechMobile.initialize(
         onStatus: (s) {
           if (!mounted) return;
-          if (s == 'notListening') setState(() => _listening = false);
+          if (s == 'notListening') {
+            setState(() {
+              _listening = false;
+              _dictTarget = null;
+              _dictBase = '';
+              _lastPartial = '';
+            });
+          }
         },
         onError: (e) {
           if (!mounted) return;
-          setState(() => _listening = false);
+          setState(() {
+            _listening = false;
+            _dictTarget = null;
+            _dictBase = '';
+            _lastPartial = '';
+          });
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(content: Text('Dictado (App): ${e.errorMsg}')),
           );
@@ -525,7 +660,7 @@ class _BudgetFormScreenState extends State<BudgetFormScreen> {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
             content: Text(
-              'No encontré un locale de español; usaré el idioma del sistema.',
+              'No encontr\u00e9 un locale de espa\u00f1ol; usar\u00e9 el idioma del sistema.',
             ),
           ),
         );
@@ -561,76 +696,90 @@ class _BudgetFormScreenState extends State<BudgetFormScreen> {
     return _LocalePick(localeId: system.localeId, hasSpanish: false);
   }
 
-  void _setProblemText(String v) {
-    if (_problem.text == v) return;
-    _problem.value = _problem.value.copyWith(
+  void _setControllerText(TextEditingController ctrl, String v) {
+    if (ctrl.text == v) return;
+    ctrl.value = ctrl.value.copyWith(
       text: v,
       selection: TextSelection.collapsed(offset: v.length),
     );
     setState(() {});
   }
 
+  String _appendPhrase(String base, String phrase) {
+    final b = base.trim();
+    final p = phrase.trim();
+    if (p.isEmpty) return b;
+    if (b.isEmpty) return p;
+    if (b.toLowerCase().endsWith(p.toLowerCase())) return b;
+    return '$b $p'.trim();
+  }
+
+  bool _isDictating(TextEditingController ctrl) {
+    return _listening && identical(_dictTarget, ctrl);
+  }
+
   void _schedulePartialUpdate(String v) {
     _pendingPartialText = v;
     _partialDebounce?.cancel();
     _partialDebounce = Timer(const Duration(milliseconds: 140), () {
-      if (!mounted || !_listening) return;
-      _setProblemText(_pendingPartialText);
+      if (!mounted || !_listening || _dictTarget == null) return;
+      _setControllerText(_dictTarget!, _pendingPartialText);
     });
   }
 
   void _onWebPartial(String text) {
-    if (!mounted || !_listening) return;
-    if (_mode == DictationMode.replace) {
-      _lastPartial = text.trim();
-      final combined = _dictBase.isEmpty
-          ? _lastPartial
-          : (_lastPartial.isEmpty ? _dictBase : '$_dictBase $_lastPartial');
-      _schedulePartialUpdate(combined.trim());
-    }
+    if (!mounted || !_listening || _dictTarget == null) return;
+    _lastPartial = text.trim();
+    final combined = _dictBase.isEmpty
+        ? _lastPartial
+        : (_lastPartial.isEmpty ? _dictBase : '$_dictBase $_lastPartial');
+    _schedulePartialUpdate(combined.trim());
   }
 
   void _onWebFinal(String text) {
-    if (!mounted || !_listening) return;
+    if (!mounted || !_listening || _dictTarget == null) return;
     final finalText = text.trim();
     if (finalText.isEmpty || _shouldIgnoreFinal(finalText)) return;
-    if (_mode == DictationMode.add) {
-      final current = _problem.text.trim();
-      if (current.isNotEmpty &&
-          current.toLowerCase().endsWith(finalText.toLowerCase())) {
-        return;
-      }
-      _setProblemText((current.isEmpty ? finalText : '$current $finalText').trim());
-    } else {
-      final base = _dictBase.trim();
-      final next = base.isEmpty ? finalText : '$base $finalText';
-      _dictBase = next.trim();
-      _lastPartial = '';
-      _setProblemText(_dictBase);
-    }
-  }
-
-  void _resetDictationBase() {
-    _dictBase = _problem.text.trim();
+    _dictBase = _appendPhrase(_dictBase, finalText);
     _lastPartial = '';
+    _setControllerText(_dictTarget!, _dictBase);
   }
 
-  Future<void> _toggleMic() async {
+  Future<void> _stopDictation() async {
+    if (!_listening) return;
+    if (kIsWeb) {
+      SpeechWeb.stop();
+    } else {
+      await _speechMobile.stop();
+    }
+    _partialDebounce?.cancel();
+    if (!mounted) return;
+    setState(() {
+      _listening = false;
+      _dictTarget = null;
+      _dictBase = '';
+      _lastPartial = '';
+    });
+  }
+
+  Future<void> _toggleMicFor(TextEditingController target) async {
     if (_saving || _sharing || _approving) return;
-    if (_listening) {
-      if (kIsWeb) {
-        SpeechWeb.stop();
-      } else {
-        await _speechMobile.stop();
-      }
-      _partialDebounce?.cancel();
-      if (mounted) setState(() => _listening = false);
+
+    if (_listening && identical(_dictTarget, target)) {
+      await _stopDictation();
       return;
     }
+    if (_listening) {
+      await _stopDictation();
+    }
 
-    _resetDictationBase();
+    _dictTarget = target;
+    _dictBase = target.text.trim();
+    _lastPartial = '';
+
     if (kIsWeb) {
       if (!SpeechWeb.isSupported()) {
+        if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
             content: Text('Este navegador no soporta dictado por voz (Web).'),
@@ -655,79 +804,67 @@ class _BudgetFormScreenState extends State<BudgetFormScreen> {
         partialResults: true,
       ),
       onResult: (res) {
-        if (!mounted) return;
+        if (!mounted || _dictTarget == null) return;
         final text = res.recognizedWords.trim();
         if (text.isEmpty) return;
-        if (_mode == DictationMode.add) {
-          if (res.finalResult) {
-            if (_shouldIgnoreFinal(text)) return;
-            final current = _problem.text.trim();
-            if (current.isNotEmpty &&
-                current.toLowerCase().endsWith(text.toLowerCase())) {
-              return;
-            }
-            _setProblemText((current.isEmpty ? text : '$current $text').trim());
-          }
-        } else {
-          if (!res.finalResult) {
-            _schedulePartialUpdate(
-              (_dictBase.isEmpty ? text : '$_dictBase $text').trim(),
-            );
-          } else {
-            if (_shouldIgnoreFinal(text)) return;
-            _dictBase = (_dictBase.isEmpty ? text : '$_dictBase $text').trim();
-            _setProblemText(_dictBase);
-          }
+        if (!res.finalResult) {
+          _schedulePartialUpdate(_appendPhrase(_dictBase, text));
+          return;
         }
+        if (_shouldIgnoreFinal(text)) return;
+        _dictBase = _appendPhrase(_dictBase, text);
+        _lastPartial = '';
+        _setControllerText(_dictTarget!, _dictBase);
       },
     );
     if (mounted) setState(() => _listening = true);
   }
 
   void _clearProblem() {
-    if (_listening) {
-      if (kIsWeb) {
-        SpeechWeb.stop();
-      } else {
-        _speechMobile.stop();
-      }
-      _partialDebounce?.cancel();
-      setState(() => _listening = false);
+    if (_isDictating(_problem)) {
+      unawaited(_stopDictation());
     }
-    _dictBase = '';
-    _lastPartial = '';
-    _setProblemText('');
-  }
-
-  void _setMode(DictationMode mode) {
-    setState(() => _mode = mode);
-    _resetDictationBase();
+    _setControllerText(_problem, '');
   }
 
   bool _validate() {
     if (_customerId == null) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Seleccioná un cliente')),
+        const SnackBar(content: Text('Seleccion\u00e1 un cliente')),
       );
       return false;
     }
     if (_vehicleId == null) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Seleccioná un vehículo')),
+        const SnackBar(content: Text('Seleccion\u00e1 un veh\u00edculo')),
+      );
+      return false;
+    }
+    if (_title.text.trim().isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('El t\u00edtulo es obligatorio')),
       );
       return false;
     }
     if (_problem.text.trim().isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('La descripción del problema es obligatoria')),
+        const SnackBar(
+          content: Text('La descripci\u00f3n del problema es obligatoria'),
+        ),
       );
       return false;
     }
     if (_parseDays() <= 0) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Tiempo estimado inválido (en días)')),
+        const SnackBar(
+          content: Text('Tiempo estimado inv\u00e1lido (en d\u00edas)'),
+        ),
       );
       return false;
+    }
+    if (_usePartsItems) {
+      final items = _collectPartsItems(validate: true);
+      if (items == null) return false;
     }
     return true;
   }
@@ -741,17 +878,29 @@ class _BudgetFormScreenState extends State<BudgetFormScreen> {
 
     setState(() => _saving = true);
     try {
+      final partsItems =
+          _collectPartsItems(validate: true) ?? <Map<String, dynamic>>[];
+      if (_usePartsItems) _syncPartsTotalFromItems();
       final labor = _parseGs(_labor.text);
       final parts = _parseGs(_parts.text);
       final total = labor + parts;
       final data = <String, dynamic>{
+        'title': _title.text.trim(),
         'customerId': _customerId,
-        'customerName': _customerName.trim().isEmpty ? 'Cliente' : _customerName.trim(),
+        'customerName': _customerName.trim().isEmpty
+            ? 'Cliente'
+            : _customerName.trim(),
         'vehicleId': _vehicleId,
-        'vehicleTitle': _vehicleTitle.trim().isEmpty ? 'Vehículo' : _vehicleTitle.trim(),
-        'date': Timestamp.fromDate(DateTime(_date.year, _date.month, _date.day)),
+        'vehicleTitle': _vehicleTitle.trim().isEmpty
+            ? 'Veh\u00edculo'
+            : _vehicleTitle.trim(),
+        'date': Timestamp.fromDate(
+          DateTime(_date.year, _date.month, _date.day),
+        ),
         'problemDescription': _problem.text.trim(),
         'estimatedDays': _parseDays(),
+        'usePartsItems': _usePartsItems,
+        'partsItems': partsItems,
         'partsEstimated': parts,
         'laborEstimated': labor,
         'totalEstimated': total,
@@ -766,7 +915,9 @@ class _BudgetFormScreenState extends State<BudgetFormScreen> {
         _currentBudgetId = ref.id;
         _status = 'Pendiente';
       } else {
-        await _budgetsCol.doc(_currentBudgetId).set(data, SetOptions(merge: true));
+        await _budgetsCol
+            .doc(_currentBudgetId)
+            .set(data, SetOptions(merge: true));
       }
 
       if (!mounted) return _currentBudgetId;
@@ -789,9 +940,13 @@ class _BudgetFormScreenState extends State<BudgetFormScreen> {
   }
 
   String _buildRepairTitle() {
+    final fromTitle = _title.text.trim();
+    if (fromTitle.isNotEmpty) return fromTitle;
     final p = _problem.text.replaceAll(RegExp(r'\s+'), ' ').trim();
     if (p.isNotEmpty) return p.length <= 70 ? p : '${p.substring(0, 67)}...';
-    if (_vehicleTitle.trim().isNotEmpty) return 'Reparación - ${_vehicleTitle.trim()}';
+    if (_vehicleTitle.trim().isNotEmpty) {
+      return 'Reparación - ${_vehicleTitle.trim()}';
+    }
     return 'Reparación aprobada desde presupuesto';
   }
 
@@ -812,7 +967,7 @@ class _BudgetFormScreenState extends State<BudgetFormScreen> {
       builder: (ctx) => AlertDialog(
         title: const Text('Aprobar presupuesto'),
         content: const Text(
-          'Se creará una reparación con estos datos y el presupuesto quedará aprobado.',
+          'Se crear\u00e1 una reparaci\u00f3n con estos datos y el presupuesto quedar\u00e1 aprobado.',
         ),
         actions: [
           TextButton(
@@ -830,6 +985,9 @@ class _BudgetFormScreenState extends State<BudgetFormScreen> {
 
     setState(() => _approving = true);
     try {
+      final partsItems =
+          _collectPartsItems(validate: true) ?? <Map<String, dynamic>>[];
+      if (_usePartsItems) _syncPartsTotalFromItems();
       final labor = _parseGs(_labor.text);
       final parts = _parseGs(_parts.text);
       final total = labor + parts;
@@ -857,6 +1015,8 @@ class _BudgetFormScreenState extends State<BudgetFormScreen> {
         'labor': labor,
         'parts': parts,
         'total': total,
+        'usePartsItems': _usePartsItems,
+        'partsItems': partsItems,
         'customerId': _customerId,
         'customerName': _customerName,
         'vehicleId': _vehicleId,
@@ -883,15 +1043,17 @@ class _BudgetFormScreenState extends State<BudgetFormScreen> {
 
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('Presupuesto aprobado y convertido a reparación'),
+          content: Text('Presupuesto aprobado y convertido a reparaci\u00f3n'),
         ),
       );
 
       final openRepair = await showDialog<bool>(
         context: context,
         builder: (_) => AlertDialog(
-          title: const Text('Conversión completada'),
-          content: const Text('¿Querés abrir la reparación creada?'),
+          title: const Text('Conversi\u00f3n completada'),
+          content: const Text(
+            '\u00bfQuer\u00e9s abrir la reparaci\u00f3n creada?',
+          ),
           actions: [
             TextButton(
               onPressed: () => Navigator.pop(context, false),
@@ -912,7 +1074,9 @@ class _BudgetFormScreenState extends State<BudgetFormScreen> {
             builder: (_) => RepairDetailScreen(
               customerId: _customerId!,
               vehicleId: _vehicleId!,
-              vehicleTitle: _vehicleTitle.trim().isEmpty ? 'Vehículo' : _vehicleTitle.trim(),
+              vehicleTitle: _vehicleTitle.trim().isEmpty
+                  ? 'Veh\u00edculo'
+                  : _vehicleTitle.trim(),
               repairId: repairRef.id,
               customerName: _customerName,
             ),
@@ -930,7 +1094,10 @@ class _BudgetFormScreenState extends State<BudgetFormScreen> {
   }
 
   Future<Map<String, dynamic>> _loadWorkshopProfile() async {
-    final snap = await FirebaseFirestore.instance.collection('users').doc(_uid).get();
+    final snap = await FirebaseFirestore.instance
+        .collection('users')
+        .doc(_uid)
+        .get();
     final data = snap.data() ?? {};
     final profile = (data['profile'] as Map<String, dynamic>?) ?? {};
     return {
@@ -970,11 +1137,18 @@ class _BudgetFormScreenState extends State<BudgetFormScreen> {
     final phone = (profile['phone'] ?? '').toString().trim();
     final ruc = (profile['ruc'] ?? '').toString().trim();
 
-    final customer = _customerName.trim().isEmpty ? 'Cliente' : _customerName.trim();
-    final vehicle = _vehicleTitle.trim().isEmpty ? 'Vehículo' : _vehicleTitle.trim();
+    final customer = _customerName.trim().isEmpty
+        ? 'Cliente'
+        : _customerName.trim();
+    final vehicle = _vehicleTitle.trim().isEmpty
+        ? 'Veh\u00edculo'
+        : _vehicleTitle.trim();
+    final title = _title.text.trim();
     final problem = _problem.text.trim();
     final obs = _obs.text.trim();
     final days = _parseDays();
+    final partsItems =
+        _collectPartsItems(validate: false) ?? <Map<String, dynamic>>[];
 
     final parts = _parseGs(_parts.text);
     final labor = _parseGs(_labor.text);
@@ -1011,12 +1185,12 @@ class _BudgetFormScreenState extends State<BudgetFormScreen> {
                   ),
                 if (address.isNotEmpty)
                   pw.Text(
-                    'Dirección: $address',
+                    'Direcci\u00f3n: $address',
                     style: const pw.TextStyle(color: PdfColors.white),
                   ),
                 if (phone.isNotEmpty)
                   pw.Text(
-                    'Teléfono: $phone',
+                    'Tel\u00e9fono: $phone',
                     style: const pw.TextStyle(color: PdfColors.white),
                   ),
                 if (ruc.isNotEmpty)
@@ -1039,7 +1213,10 @@ class _BudgetFormScreenState extends State<BudgetFormScreen> {
                 ),
               ),
               pw.Container(
-                padding: const pw.EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                padding: const pw.EdgeInsets.symmetric(
+                  horizontal: 10,
+                  vertical: 6,
+                ),
                 decoration: pw.BoxDecoration(
                   borderRadius: pw.BorderRadius.circular(999),
                   border: pw.Border.all(color: PdfColor.fromHex('#334155')),
@@ -1058,9 +1235,10 @@ class _BudgetFormScreenState extends State<BudgetFormScreen> {
             child: pw.Column(
               crossAxisAlignment: pw.CrossAxisAlignment.start,
               children: [
+                _pdfInfoLine('T\u00edtulo', title),
                 _pdfInfoLine('Cliente', customer),
-                _pdfInfoLine('Vehículo', vehicle),
-                _pdfInfoLine('Tiempo estimado', '$days día(s)'),
+                _pdfInfoLine('Veh\u00edculo', vehicle),
+                _pdfInfoLine('Tiempo estimado', '$days d\u00eda(s)'),
               ],
             ),
           ),
@@ -1075,7 +1253,7 @@ class _BudgetFormScreenState extends State<BudgetFormScreen> {
               crossAxisAlignment: pw.CrossAxisAlignment.start,
               children: [
                 pw.Text(
-                  'Descripción del problema',
+                  'Descripci\u00f3n del problema',
                   style: pw.TextStyle(fontWeight: pw.FontWeight.bold),
                 ),
                 pw.SizedBox(height: 8),
@@ -1108,6 +1286,22 @@ class _BudgetFormScreenState extends State<BudgetFormScreen> {
                 ),
                 pw.SizedBox(height: 8),
                 _pdfInfoLine('Repuestos', moneyFmt.format(parts.round())),
+                if (partsItems.isNotEmpty) ...[
+                  pw.SizedBox(height: 6),
+                  pw.Text(
+                    'Detalle de repuestos',
+                    style: pw.TextStyle(fontWeight: pw.FontWeight.bold),
+                  ),
+                  pw.SizedBox(height: 4),
+                  ...partsItems.map(
+                    (e) => pw.Padding(
+                      padding: const pw.EdgeInsets.only(bottom: 2),
+                      child: pw.Text(
+                        '- ${(e['name'] ?? '').toString()} | ${moneyFmt.format(((e['unitPrice'] as num?) ?? 0).round())} Gs.',
+                      ),
+                    ),
+                  ),
+                ],
                 _pdfInfoLine('Mano de obra', moneyFmt.format(labor.round())),
                 pw.Divider(),
                 _pdfInfoLine('TOTAL', moneyFmt.format(total.round())),
@@ -1134,15 +1328,15 @@ class _BudgetFormScreenState extends State<BudgetFormScreen> {
     try {
       final profile = await _loadWorkshopProfile();
       final bytes = await _buildPdfBytes(profile);
-      final safeCustomer = _customerName
-          .trim()
-          .replaceAll(RegExp(r'[^a-zA-Z0-9]+'), '_');
-      final file = 'presupuesto_${safeCustomer}_${DateFormat('yyyyMMdd').format(_date)}.pdf';
+      final safeCustomer = _customerName.trim().replaceAll(
+        RegExp(r'[^a-zA-Z0-9]+'),
+        '_',
+      );
+      final file =
+          'presupuesto_${safeCustomer}_${DateFormat('yyyyMMdd').format(_date)}.pdf';
       await SharePlus.instance.share(
         ShareParams(
-          files: [
-            XFile.fromData(bytes, mimeType: 'application/pdf'),
-          ],
+          files: [XFile.fromData(bytes, mimeType: 'application/pdf')],
           fileNameOverrides: [file],
           title: file,
           subject: file,
@@ -1191,6 +1385,12 @@ class _BudgetFormScreenState extends State<BudgetFormScreen> {
         padding: const EdgeInsets.all(16),
         child: ListView(
           children: [
+            _Field(
+              label: 'T\u00edtulo *',
+              controller: _title,
+              helperText: 'Se copiar\u00e1 a Reparaciones al convertir',
+            ),
+            const SizedBox(height: 12),
             _PickerField(
               label: 'Fecha *',
               value: _dateFmt.format(_date),
@@ -1209,11 +1409,11 @@ class _BudgetFormScreenState extends State<BudgetFormScreen> {
             ),
             const SizedBox(height: 12),
             _PickerField(
-              label: 'Vehículo *',
+              label: 'Veh\u00edculo *',
               value: _vehicleTitle,
               hint: _loadingVehicles
-                  ? 'Cargando vehículos...'
-                  : 'Seleccionar vehículo',
+                  ? 'Cargando veh\u00edculos...'
+                  : 'Seleccionar veh\u00edculo',
               icon: Icons.directions_car_filled_outlined,
               onTap: widget.lockVehicle ? null : _pickVehicle,
               disabled: widget.lockVehicle,
@@ -1221,16 +1421,14 @@ class _BudgetFormScreenState extends State<BudgetFormScreen> {
             const SizedBox(height: 12),
             _DescFieldWithMic(
               controller: _problem,
-              listening: _listening,
+              listening: _isDictating(_problem),
               micEnabled: micEnabled,
-              mode: _mode,
-              onMicTap: _toggleMic,
+              onMicTap: () => _toggleMicFor(_problem),
               onClearTap: _clearProblem,
-              onModeChanged: _setMode,
             ),
             const SizedBox(height: 12),
             _Field(
-              label: 'Tiempo estimado (días) *',
+              label: 'Tiempo estimado (d\u00edas) *',
               controller: _days,
               keyboardType: TextInputType.number,
               helperText: 'Ej: 2',
@@ -1250,13 +1448,126 @@ class _BudgetFormScreenState extends State<BudgetFormScreen> {
                       style: Theme.of(context).textTheme.titleMedium,
                     ),
                     const SizedBox(height: 12),
-                    _MoneyField(
-                      label: 'Monto de repuestos estimado',
-                      controller: _parts,
-                      helperText: 'Ej: 450.000',
-                      format: _formatGsFromDigits,
-                      onChanged: () => setState(() {}),
+                    SwitchListTile(
+                      contentPadding: EdgeInsets.zero,
+                      title: const Text('Cargar repuestos item por item'),
+                      subtitle: const Text(
+                        'Opcional: nombre + precio unitario (manual o voz)',
+                      ),
+                      value: _usePartsItems,
+                      onChanged: (_saving || _approving || _sharing)
+                          ? null
+                          : (v) {
+                              setState(() {
+                                _usePartsItems = v;
+                                if (_usePartsItems && _partsItems.isEmpty) {
+                                  _partsItems.add(_PartItemInput());
+                                }
+                              });
+                              if (_usePartsItems) {
+                                _syncPartsTotalFromItems();
+                              }
+                            },
                     ),
+                    if (_usePartsItems) ...[
+                      const SizedBox(height: 6),
+                      if (_partsItems.isEmpty)
+                        OutlinedButton.icon(
+                          onPressed: _addPartsItem,
+                          icon: const Icon(Icons.add),
+                          label: const Text('Agregar repuesto'),
+                        ),
+                      ...List.generate(_partsItems.length, (i) {
+                        final item = _partsItems[i];
+                        return Padding(
+                          padding: const EdgeInsets.only(bottom: 10),
+                          child: Row(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Expanded(
+                                flex: 6,
+                                child: TextField(
+                                  controller: item.nameCtrl,
+                                  decoration: InputDecoration(
+                                    labelText: 'Repuesto #${i + 1}',
+                                    border: const OutlineInputBorder(),
+                                    suffixIcon: IconButton(
+                                      tooltip: _isDictating(item.nameCtrl)
+                                          ? 'Detener dictado'
+                                          : 'Dictar por voz',
+                                      onPressed: micEnabled
+                                          ? () => _toggleMicFor(item.nameCtrl)
+                                          : null,
+                                      icon: Icon(
+                                        _isDictating(item.nameCtrl)
+                                            ? Icons.mic
+                                            : Icons.mic_none,
+                                        color: _isDictating(item.nameCtrl)
+                                            ? Colors.redAccent
+                                            : null,
+                                      ),
+                                    ),
+                                  ),
+                                  onChanged: (_) => setState(() {}),
+                                ),
+                              ),
+                              const SizedBox(width: 8),
+                              Expanded(
+                                flex: 4,
+                                child: TextField(
+                                  controller: item.unitPriceCtrl,
+                                  keyboardType: TextInputType.number,
+                                  inputFormatters: [
+                                    FilteringTextInputFormatter.allow(
+                                      RegExp(r'[0-9., ]'),
+                                    ),
+                                  ],
+                                  onChanged: (v) =>
+                                      _onPartsItemPriceChanged(item, v),
+                                  decoration: const InputDecoration(
+                                    labelText: 'Unitario (Gs.)',
+                                    border: OutlineInputBorder(),
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(width: 6),
+                              Column(
+                                children: [
+                                  IconButton(
+                                    tooltip: 'Agregar repuesto',
+                                    onPressed: _addPartsItem,
+                                    icon: const Icon(Icons.add_circle_outline),
+                                  ),
+                                  IconButton(
+                                    tooltip: 'Eliminar repuesto',
+                                    onPressed: _partsItems.length <= 1
+                                        ? null
+                                        : () => _removePartsItem(i),
+                                    icon: const Icon(
+                                      Icons.remove_circle_outline,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ],
+                          ),
+                        );
+                      }),
+                      const SizedBox(height: 4),
+                      _Field(
+                        label: 'Total repuestos estimado (auto)',
+                        controller: _parts,
+                        keyboardType: TextInputType.number,
+                        readOnly: true,
+                      ),
+                    ] else
+                      _MoneyField(
+                        label: 'Monto de repuestos estimado',
+                        controller: _parts,
+                        helperText: 'Ej: 450.000',
+                        format: _formatGsFromDigits,
+                        onChanged: () => setState(() {}),
+                      ),
                     _MoneyField(
                       label: 'Monto de mano de obra estimado',
                       controller: _labor,
@@ -1291,7 +1602,10 @@ class _BudgetFormScreenState extends State<BudgetFormScreen> {
             const SizedBox(height: 12),
             Card(
               child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 12,
+                  vertical: 10,
+                ),
                 child: Row(
                   children: [
                     const Icon(Icons.flag_outlined, size: 18),
@@ -1322,7 +1636,9 @@ class _BudgetFormScreenState extends State<BudgetFormScreen> {
               SizedBox(
                 width: double.infinity,
                 child: OutlinedButton.icon(
-                  onPressed: (_sharing || _saving || _approving) ? null : _sharePdf,
+                  onPressed: (_sharing || _saving || _approving)
+                      ? null
+                      : _sharePdf,
                   icon: const Icon(Icons.share_outlined),
                   label: const Text('Compartir en PDF'),
                 ),
@@ -1346,7 +1662,7 @@ class _BudgetFormScreenState extends State<BudgetFormScreen> {
                   label: Text(
                     _approving
                         ? 'Aprobando...'
-                        : 'Aprobar y convertir en reparación',
+                        : 'Aprobar y convertir en reparaci\u00f3n',
                   ),
                 ),
               ),
@@ -1381,9 +1697,9 @@ class _PickerField extends StatelessWidget {
     final active = onTap != null && !disabled;
     final textStyle = hasValue
         ? null
-        : Theme.of(context).textTheme.bodyMedium?.copyWith(
-              color: Theme.of(context).hintColor,
-            );
+        : Theme.of(
+            context,
+          ).textTheme.bodyMedium?.copyWith(color: Theme.of(context).hintColor);
     return InkWell(
       borderRadius: BorderRadius.circular(12),
       onTap: active ? onTap : null,
@@ -1391,7 +1707,10 @@ class _PickerField extends StatelessWidget {
         decoration: InputDecoration(
           labelText: label,
           border: const OutlineInputBorder(),
-          suffixIcon: Icon(icon, color: active ? null : Theme.of(context).disabledColor),
+          suffixIcon: Icon(
+            icon,
+            color: active ? null : Theme.of(context).disabledColor,
+          ),
         ),
         child: Text(text, style: textStyle),
       ),
@@ -1405,6 +1724,7 @@ class _Field extends StatelessWidget {
   final TextInputType? keyboardType;
   final String? helperText;
   final List<TextInputFormatter>? inputFormatters;
+  final bool readOnly;
 
   const _Field({
     required this.label,
@@ -1412,6 +1732,7 @@ class _Field extends StatelessWidget {
     this.keyboardType,
     this.helperText,
     this.inputFormatters,
+    this.readOnly = false,
   });
 
   @override
@@ -1419,6 +1740,7 @@ class _Field extends StatelessWidget {
     return TextField(
       controller: controller,
       keyboardType: keyboardType,
+      readOnly: readOnly,
       inputFormatters: inputFormatters,
       decoration: InputDecoration(
         labelText: label,
@@ -1492,24 +1814,19 @@ class _DescFieldWithMic extends StatelessWidget {
   final TextEditingController controller;
   final bool listening;
   final bool micEnabled;
-  final DictationMode mode;
   final VoidCallback onMicTap;
   final VoidCallback onClearTap;
-  final void Function(DictationMode mode) onModeChanged;
 
   const _DescFieldWithMic({
     required this.controller,
     required this.listening,
     required this.micEnabled,
-    required this.mode,
     required this.onMicTap,
     required this.onClearTap,
-    required this.onModeChanged,
   });
 
   @override
   Widget build(BuildContext context) {
-    final modeText = mode == DictationMode.add ? 'Agregar' : 'Reemplazar';
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -1517,14 +1834,14 @@ class _DescFieldWithMic extends StatelessWidget {
           controller: controller,
           maxLines: 4,
           decoration: InputDecoration(
-            labelText: 'Descripción de problema *',
-            helperText: 'Dictado: $modeText',
+            labelText: 'Descripci\u00f3n del problema *',
+            helperText: 'Pod\u00e9s escribir o dictar por voz',
             border: const OutlineInputBorder(),
             suffixIcon: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
                 IconButton(
-                  tooltip: 'Borrar rápido',
+                  tooltip: 'Borrar r\u00e1pido',
                   onPressed: onClearTap,
                   icon: const Icon(Icons.backspace_outlined),
                 ),
@@ -1546,23 +1863,6 @@ class _DescFieldWithMic extends StatelessWidget {
           const SizedBox(height: 6),
           const Text('Escuchando...'),
         ],
-        const SizedBox(height: 10),
-        SegmentedButton<DictationMode>(
-          segments: const [
-            ButtonSegment(
-              value: DictationMode.add,
-              label: Text('Agregar'),
-              icon: Icon(Icons.add),
-            ),
-            ButtonSegment(
-              value: DictationMode.replace,
-              label: Text('Reemplazar'),
-              icon: Icon(Icons.find_replace),
-            ),
-          ],
-          selected: {mode},
-          onSelectionChanged: (s) => onModeChanged(s.first),
-        ),
       ],
     );
   }

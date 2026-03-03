@@ -1,0 +1,109 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(uid) {
+      return signedIn() && request.auth.uid == uid;
+    }
+
+    function isAdmin() {
+      return signedIn() &&
+          get(/databases/$(database)/documents/users/$(request.auth.uid)).data.isAdmin == true;
+    }
+
+    function isActiveUser(uid) {
+      return isOwner(uid) &&
+          get(/databases/$(database)/documents/users/$(uid)).data.isActive == true;
+    }
+
+    function isTrialActiveUser(uid) {
+      return isOwner(uid) &&
+          get(/databases/$(database)/documents/users/$(uid)).data.trialEndsAt is timestamp &&
+          request.time <= get(/databases/$(database)/documents/users/$(uid)).data.trialEndsAt;
+    }
+
+    function hasUserAccess(uid) {
+      return isActiveUser(uid) || isTrialActiveUser(uid);
+    }
+
+    function needsTrialBootstrap(uid) {
+      return isOwner(uid) &&
+          get(/databases/$(database)/documents/users/$(uid)).data.isActive != true &&
+          !(get(/databases/$(database)/documents/users/$(uid)).data.trialEndsAt is timestamp);
+    }
+
+    function isAllowedTrialBootstrapUpdate() {
+      return request.resource.data.diff(resource.data).changedKeys().hasOnly([
+        'isActive',
+        'trialStartedAt',
+        'trialEndsAt',
+        'email',
+        'displayName',
+        'updatedAt',
+      ]) && request.resource.data.isActive == false;
+    }
+
+    function isAllowedOwnerUserUpdate() {
+      return !request.resource.data.diff(resource.data).changedKeys().hasAny([
+        'isActive',
+        'isAdmin',
+        'trialStartedAt',
+        'trialEndsAt',
+        'activatedAt',
+        'deactivatedAt',
+      ]);
+    }
+
+    function isAllowedAdminUserUpdate() {
+      return request.resource.data.diff(resource.data).changedKeys().hasOnly([
+        'isActive',
+        'isAdmin',
+        'trialStartedAt',
+        'trialEndsAt',
+        'activatedAt',
+        'deactivatedAt',
+        'updatedAt',
+      ]);
+    }
+
+    match /users/{uid} {
+      // Permite a usuarios autenticados leer docs de admins para tomar
+      // el contacto de activacion (WhatsApp) desde Firestore.
+      allow read: if isOwner(uid) || isAdmin() ||
+          (signedIn() && resource.data.isAdmin == true);
+
+      // Alta inicial del usuario en primer login social.
+      // Se fuerza a que nazca inactivo.
+      allow create: if isOwner(uid) && request.resource.data.isActive == false;
+
+      // Owner: puede editar su perfil/config mientras tenga acceso.
+      // Admin: puede activar/desactivar o ajustar campos de trial/admin.
+      allow update: if (hasUserAccess(uid) && isAllowedOwnerUserUpdate()) ||
+          (needsTrialBootstrap(uid) && isAllowedTrialBootstrapUpdate()) ||
+          (isAdmin() && isAllowedAdminUserUpdate());
+      allow delete: if hasUserAccess(uid);
+
+      // Regla general para subcolecciones del usuario.
+      match /{document=**} {
+        allow read, write: if hasUserAccess(uid);
+      }
+    }
+
+    // Vehicles (collectionGroup)
+    match /users/{uid}/customers/{customerId}/vehicles/{vehicleId} {
+      // Leer: solo con acceso vigente y dueno del ownerUid.
+      allow read: if hasUserAccess(uid) &&
+          resource.data.ownerUid == request.auth.uid;
+
+      // Crear/actualizar: con acceso vigente, dentro de su path y ownerUid correcto.
+      allow create, update: if hasUserAccess(uid) &&
+          request.auth.uid == uid &&
+          request.resource.data.ownerUid == request.auth.uid;
+
+      allow delete: if hasUserAccess(uid) && request.auth.uid == uid;
+    }
+  }
+}
