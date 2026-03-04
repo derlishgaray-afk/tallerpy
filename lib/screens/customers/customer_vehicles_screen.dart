@@ -2,14 +2,17 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
+import '../../features/vehicles/data/models/vehicle_model.dart';
+import '../../features/vehicles/data/repositories/vehicles_repository.dart';
 import 'vehicle_form_screen.dart';
 import 'vehicle_detail_screen.dart';
 
 class CustomerVehiclesScreen extends StatelessWidget {
   final String customerId;
   final String customerName;
+  final VehiclesRepository _repo = VehiclesRepository();
 
-  const CustomerVehiclesScreen({
+  CustomerVehiclesScreen({
     super.key,
     required this.customerId,
     required this.customerName,
@@ -17,13 +20,15 @@ class CustomerVehiclesScreen extends StatelessWidget {
 
   String get _uid => FirebaseAuth.instance.currentUser!.uid;
 
-  CollectionReference<Map<String, dynamic>> _vehiclesCol() {
-    return FirebaseFirestore.instance
-        .collection('users')
-        .doc(_uid)
-        .collection('customers')
-        .doc(customerId)
-        .collection('vehicles');
+  Map<String, dynamic> _toInitial(VehicleModel vehicle) {
+    return {
+      'brand': vehicle.brand,
+      'model': vehicle.model,
+      'plate': vehicle.plate,
+      'year': vehicle.year,
+      'chassis': vehicle.chassis,
+      'notes': vehicle.notes,
+    };
   }
 
   void _openDetail(BuildContext context, String vehicleId) {
@@ -60,7 +65,7 @@ class CustomerVehiclesScreen extends StatelessWidget {
 
     if (ok != true) return;
 
-    await _vehiclesCol().doc(vehicleId).delete();
+    await _repo.deleteVehicle(_uid, customerId, vehicleId);
 
     if (!context.mounted) return;
     ScaffoldMessenger.of(
@@ -80,7 +85,7 @@ class CustomerVehiclesScreen extends StatelessWidget {
   void _openEdit(
     BuildContext context,
     String vehicleId,
-    Map<String, dynamic> d,
+    VehicleModel vehicle,
   ) {
     Navigator.push(
       context,
@@ -88,7 +93,7 @@ class CustomerVehiclesScreen extends StatelessWidget {
         builder: (_) => VehicleFormScreen(
           customerId: customerId,
           vehicleId: vehicleId,
-          initial: d,
+          initial: _toInitial(vehicle),
         ),
       ),
     );
@@ -104,10 +109,8 @@ class CustomerVehiclesScreen extends StatelessWidget {
         onPressed: () => _openNew(context),
         child: const Icon(Icons.add),
       ),
-      body: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-        stream: _vehiclesCol()
-            .orderBy('updatedAt', descending: true)
-            .snapshots(),
+      body: StreamBuilder<QuerySnapshot<VehicleModel>>(
+        stream: _repo.watchVehiclesForCustomer(_uid, customerId),
         builder: (context, snapshot) {
           if (snapshot.hasError) {
             return Center(child: Text('Error: ${snapshot.error}'));
@@ -141,12 +144,12 @@ class CustomerVehiclesScreen extends StatelessWidget {
             separatorBuilder: (_, index) => const SizedBox(height: 10),
             itemBuilder: (context, i) {
               final doc = docs[i];
-              final d = doc.data();
+              final vehicle = doc.data();
 
-              final brand = (d['brand'] ?? '').toString();
-              final model = (d['model'] ?? '').toString();
-              final plate = (d['plate'] ?? '').toString();
-              final year = (d['year'] ?? '').toString();
+              final brand = vehicle.brand;
+              final model = vehicle.model;
+              final plate = vehicle.plate;
+              final year = vehicle.year;
 
               final title = [
                 brand,
@@ -168,7 +171,7 @@ class CustomerVehiclesScreen extends StatelessWidget {
                   trailing: PopupMenuButton<String>(
                     onSelected: (v) {
                       if (v == 'edit') {
-                        _openEdit(context, doc.id, d);
+                        _openEdit(context, doc.id, vehicle);
                       } else if (v == 'del') {
                         _delete(context, doc.id);
                       }

@@ -2,14 +2,17 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
+import '../../features/vehicles/data/models/vehicle_model.dart';
+import '../../features/vehicles/data/repositories/vehicles_repository.dart';
 import 'vehicle_form_screen.dart';
 
 class VehicleDetailScreen extends StatelessWidget {
   final String customerId;
   final String vehicleId;
   final String customerName;
+  final VehiclesRepository _repo = VehiclesRepository();
 
-  const VehicleDetailScreen({
+  VehicleDetailScreen({
     super.key,
     required this.customerId,
     required this.vehicleId,
@@ -18,22 +21,27 @@ class VehicleDetailScreen extends StatelessWidget {
 
   String get _uid => FirebaseAuth.instance.currentUser!.uid;
 
-  DocumentReference<Map<String, dynamic>> _vehicleRef() {
-    return FirebaseFirestore.instance
-        .collection('users')
-        .doc(_uid)
-        .collection('customers')
-        .doc(customerId)
-        .collection('vehicles')
-        .doc(vehicleId);
+  Stream<DocumentSnapshot<VehicleModel>> _vehicleStream() {
+    return _repo.watchVehicleById(_uid, customerId, vehicleId);
+  }
+
+  Map<String, dynamic> _toInitial(VehicleModel vehicle) {
+    return {
+      'brand': vehicle.brand,
+      'model': vehicle.model,
+      'plate': vehicle.plate,
+      'year': vehicle.year,
+      'chassis': vehicle.chassis,
+      'notes': vehicle.notes,
+    };
   }
 
   @override
   Widget build(BuildContext context) {
     final custName = customerName.trim().isEmpty ? 'Cliente' : customerName;
 
-    return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
-      stream: _vehicleRef().snapshots(),
+    return StreamBuilder<DocumentSnapshot<VehicleModel>>(
+      stream: _vehicleStream(),
       builder: (context, snap) {
         if (snap.hasError) {
           return Scaffold(
@@ -55,19 +63,19 @@ class VehicleDetailScreen extends StatelessWidget {
           );
         }
 
-        final data = snap.data!.data();
-        if (data == null) {
+        final vehicle = snap.data!.data();
+        if (vehicle == null) {
           return Scaffold(
             appBar: AppBar(title: const Text('Vehiculo')),
             body: const Center(child: Text('Vehiculo no encontrado')),
           );
         }
 
-        final brand = (data['brand'] ?? '').toString().trim();
-        final model = (data['model'] ?? '').toString().trim();
-        final plate = (data['plate'] ?? '').toString().trim();
-        final year = (data['year'] ?? '').toString().trim();
-        final notes = (data['notes'] ?? '').toString().trim();
+        final brand = vehicle.brand;
+        final model = vehicle.model;
+        final plate = vehicle.plate;
+        final year = vehicle.year;
+        final notes = vehicle.notes;
 
         final title = [
           if (brand.isNotEmpty) brand,
@@ -89,7 +97,7 @@ class VehicleDetailScreen extends StatelessWidget {
                       builder: (_) => VehicleFormScreen(
                         customerId: customerId,
                         vehicleId: vehicleId,
-                        initial: data,
+                        initial: _toInitial(vehicle),
                       ),
                     ),
                   );
@@ -167,4 +175,3 @@ class _InfoRow extends StatelessWidget {
     );
   }
 }
-
