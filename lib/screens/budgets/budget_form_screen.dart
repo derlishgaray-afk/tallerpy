@@ -1,6 +1,5 @@
 import 'dart:async';
 
-import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -12,6 +11,7 @@ import 'package:share_plus/share_plus.dart';
 import 'package:speech_to_text/speech_to_text.dart' as stt;
 
 import '../../utils/speech_web.dart';
+import '../../features/budgets/data/repositories/budget_form_repository.dart';
 import 'widgets/budget_form_sections.dart';
 import '../repairs/repair_detail_screen.dart';
 
@@ -69,6 +69,7 @@ class _BudgetFormScreenState extends State<BudgetFormScreen> {
   final _labor = TextEditingController();
   final _obs = TextEditingController();
 
+  final _repo = BudgetFormRepository();
   bool _usePartsItems = false;
   final List<_PartItemInput> _partsItems = [];
 
@@ -76,7 +77,7 @@ class _BudgetFormScreenState extends State<BudgetFormScreen> {
   String _customerName = '';
   String? _vehicleId;
   String _vehicleTitle = '';
-  List<QueryDocumentSnapshot<Map<String, dynamic>>> _vehicleDocs = [];
+  List<VehicleLookup> _vehicleDocs = [];
 
   DateTime _date = DateTime.now();
   String _status = 'Pendiente';
@@ -107,22 +108,6 @@ class _BudgetFormScreenState extends State<BudgetFormScreen> {
   bool _mobileLocaleSnackShown = false;
 
   String get _uid => FirebaseAuth.instance.currentUser!.uid;
-
-  CollectionReference<Map<String, dynamic>> get _budgetsCol => FirebaseFirestore
-      .instance
-      .collection('users')
-      .doc(_uid)
-      .collection('budgets');
-
-  CollectionReference<Map<String, dynamic>> get _customersCol =>
-      FirebaseFirestore.instance
-          .collection('users')
-          .doc(_uid)
-          .collection('customers');
-
-  CollectionReference<Map<String, dynamic>> _vehiclesCol(String customerId) {
-    return _customersCol.doc(customerId).collection('vehicles');
-  }
 
   @override
   void initState() {
@@ -216,9 +201,17 @@ class _BudgetFormScreenState extends State<BudgetFormScreen> {
   }
 
   DateTime? _parseDate(dynamic v) {
-    if (v is Timestamp) return v.toDate();
     if (v is DateTime) return v;
     if (v is String) return DateTime.tryParse(v);
+    if (v != null) {
+      final dynamicValue = v as dynamic;
+      try {
+        final date = dynamicValue.toDate();
+        if (date is DateTime) return date;
+      } catch (_) {
+        // Ignored: not a timestamp-like object.
+      }
+    }
     return null;
   }
 
@@ -237,30 +230,27 @@ class _BudgetFormScreenState extends State<BudgetFormScreen> {
     }
   }
 
-  String _vehicleTitleFromData(Map<String, dynamic> d) {
-    final brand = (d['brand'] ?? '').toString().trim();
-    final model = (d['model'] ?? '').toString().trim();
-    final plate = (d['plate'] ?? '').toString().trim();
-    final base = [brand, model].where((e) => e.isNotEmpty).join(' ').trim();
-    if (plate.isEmpty) return base.isEmpty ? 'Veh\u00edculo' : base;
-    return base.isEmpty ? plate : '$base - $plate';
+  String _vehicleTitleFromData(VehicleLookup vehicle) {
+    return vehicle.title;
   }
 
   Future<void> _ensureNames() async {
     if (_customerId != null && _customerName.trim().isEmpty) {
-      final s = await _customersCol.doc(_customerId).get();
-      final d = s.data();
-      if (d != null && mounted) {
-        _customerName = (d['name'] ?? 'Cliente').toString().trim();
+      final customer = await _repo.getCustomerById(_uid, _customerId!);
+      if (customer != null && mounted) {
+        _customerName = customer.name.isEmpty ? 'Cliente' : customer.name;
       }
     }
     if (_customerId != null &&
         _vehicleId != null &&
         _vehicleTitle.trim().isEmpty) {
-      final s = await _vehiclesCol(_customerId!).doc(_vehicleId).get();
-      final d = s.data();
-      if (d != null && mounted) {
-        _vehicleTitle = _vehicleTitleFromData(d);
+      final vehicle = await _repo.getVehicleById(
+        _uid,
+        _customerId!,
+        _vehicleId!,
+      );
+      if (vehicle != null && mounted) {
+        _vehicleTitle = _vehicleTitleFromData(vehicle);
       }
     }
     if (mounted) setState(() {});
@@ -272,18 +262,16 @@ class _BudgetFormScreenState extends State<BudgetFormScreen> {
   }) async {
     if (mounted) setState(() => _loadingVehicles = true);
     try {
-      final snap = await _vehiclesCol(
-        customerId,
-      ).orderBy('updatedAt', descending: true).get();
+      final vehicles = await _repo.listVehiclesForCustomer(_uid, customerId);
       if (!mounted) return;
       String? selectedId = keepSelection ? _vehicleId : null;
       String selectedTitle = keepSelection ? _vehicleTitle : '';
       if (keepSelection && selectedId != null) {
         bool exists = false;
-        for (final doc in snap.docs) {
-          if (doc.id == selectedId) {
+        for (final vehicle in vehicles) {
+          if (vehicle.id == selectedId) {
             exists = true;
-            selectedTitle = _vehicleTitleFromData(doc.data());
+            selectedTitle = _vehicleTitleFromData(vehicle);
             break;
           }
         }
@@ -293,7 +281,7 @@ class _BudgetFormScreenState extends State<BudgetFormScreen> {
         }
       }
       setState(() {
-        _vehicleDocs = snap.docs;
+        _vehicleDocs = vehicles;
         _vehicleId = selectedId;
         _vehicleTitle = selectedTitle;
       });
@@ -317,10 +305,9 @@ class _BudgetFormScreenState extends State<BudgetFormScreen> {
   Future<void> _pickCustomer() async {
     if (widget.lockCustomer || _saving || _approving) return;
 
-    final snap = await _customersCol.orderBy('name').get();
-    final docs = snap.docs;
+    final customers = await _repo.listCustomers(_uid);
     if (!mounted) return;
-    if (docs.isEmpty) {
+    if (customers.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text('No hay clientes registrados todav\u00eda.'),
@@ -329,86 +316,74 @@ class _BudgetFormScreenState extends State<BudgetFormScreen> {
       return;
     }
 
-    final picked =
-        await showDialog<QueryDocumentSnapshot<Map<String, dynamic>>>(
-          context: context,
-          builder: (ctx) {
-            String q = '';
-            return StatefulBuilder(
-              builder: (ctx, setLocal) {
-                final filtered = docs.where((doc) {
-                  final d = doc.data();
-                  final hay = [
-                    (d['name'] ?? '').toString(),
-                    (d['phone'] ?? '').toString(),
-                    (d['ruc'] ?? '').toString(),
-                  ].join(' ').toLowerCase();
-                  return hay.contains(q.toLowerCase());
-                }).toList();
+    final picked = await showDialog<CustomerLookup>(
+      context: context,
+      builder: (ctx) {
+        String q = '';
+        return StatefulBuilder(
+          builder: (ctx, setLocal) {
+            final filtered = customers.where((customer) {
+              final hay = [
+                customer.name,
+                customer.phone,
+                customer.ruc,
+              ].join(' ').toLowerCase();
+              return hay.contains(q.toLowerCase());
+            }).toList();
 
-                return AlertDialog(
-                  title: const Text('Seleccionar cliente'),
-                  content: SizedBox(
-                    width: 500,
-                    height: 420,
-                    child: Column(
-                      children: [
-                        TextField(
-                          decoration: const InputDecoration(
-                            labelText: 'Buscar cliente',
-                            prefixIcon: Icon(Icons.search),
-                            border: OutlineInputBorder(),
-                          ),
-                          onChanged: (v) => setLocal(() => q = v),
-                        ),
-                        const SizedBox(height: 10),
-                        Expanded(
-                          child: filtered.isEmpty
-                              ? const Center(child: Text('Sin resultados'))
-                              : ListView.builder(
-                                  itemCount: filtered.length,
-                                  itemBuilder: (_, i) {
-                                    final doc = filtered[i];
-                                    final d = doc.data();
-                                    final name = (d['name'] ?? 'Cliente')
-                                        .toString()
-                                        .trim();
-                                    final phone = (d['phone'] ?? '')
-                                        .toString()
-                                        .trim();
-                                    return ListTile(
-                                      leading: const Icon(
-                                        Icons.people_alt_outlined,
-                                      ),
-                                      title: Text(
-                                        name.isEmpty ? 'Cliente' : name,
-                                      ),
-                                      subtitle: phone.isEmpty
-                                          ? null
-                                          : Text(phone),
-                                      onTap: () => Navigator.pop(ctx, doc),
-                                    );
-                                  },
-                                ),
-                        ),
-                      ],
+            return AlertDialog(
+              title: const Text('Seleccionar cliente'),
+              content: SizedBox(
+                width: 500,
+                height: 420,
+                child: Column(
+                  children: [
+                    TextField(
+                      decoration: const InputDecoration(
+                        labelText: 'Buscar cliente',
+                        prefixIcon: Icon(Icons.search),
+                        border: OutlineInputBorder(),
+                      ),
+                      onChanged: (v) => setLocal(() => q = v),
                     ),
-                  ),
-                  actions: [
-                    TextButton(
-                      onPressed: () => Navigator.pop(ctx),
-                      child: const Text('Cancelar'),
+                    const SizedBox(height: 10),
+                    Expanded(
+                      child: filtered.isEmpty
+                          ? const Center(child: Text('Sin resultados'))
+                          : ListView.builder(
+                              itemCount: filtered.length,
+                              itemBuilder: (_, i) {
+                                final customer = filtered[i];
+                                final name = customer.name;
+                                final phone = customer.phone;
+                                return ListTile(
+                                  leading: const Icon(
+                                    Icons.people_alt_outlined,
+                                  ),
+                                  title: Text(name.isEmpty ? 'Cliente' : name),
+                                  subtitle: phone.isEmpty ? null : Text(phone),
+                                  onTap: () => Navigator.pop(ctx, customer),
+                                );
+                              },
+                            ),
                     ),
                   ],
-                );
-              },
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(ctx),
+                  child: const Text('Cancelar'),
+                ),
+              ],
             );
           },
         );
+      },
+    );
 
     if (picked == null) return;
-    final d = picked.data();
-    final name = (d['name'] ?? 'Cliente').toString().trim();
+    final name = picked.name;
     setState(() {
       _customerId = picked.id;
       _customerName = name.isEmpty ? 'Cliente' : name;
@@ -439,77 +414,73 @@ class _BudgetFormScreenState extends State<BudgetFormScreen> {
       return;
     }
 
-    final picked =
-        await showDialog<QueryDocumentSnapshot<Map<String, dynamic>>>(
-          context: context,
-          builder: (ctx) {
-            String q = '';
-            return StatefulBuilder(
-              builder: (ctx, setLocal) {
-                final filtered = _vehicleDocs.where((doc) {
-                  final d = doc.data();
-                  final hay = [
-                    (d['brand'] ?? '').toString(),
-                    (d['model'] ?? '').toString(),
-                    (d['plate'] ?? '').toString(),
-                    (d['year'] ?? '').toString(),
-                  ].join(' ').toLowerCase();
-                  return hay.contains(q.toLowerCase());
-                }).toList();
-                return AlertDialog(
-                  title: const Text('Seleccionar veh\u00edculo'),
-                  content: SizedBox(
-                    width: 500,
-                    height: 420,
-                    child: Column(
-                      children: [
-                        TextField(
-                          decoration: const InputDecoration(
-                            labelText: 'Buscar veh\u00edculo',
-                            prefixIcon: Icon(Icons.search),
-                            border: OutlineInputBorder(),
-                          ),
-                          onChanged: (v) => setLocal(() => q = v),
-                        ),
-                        const SizedBox(height: 10),
-                        Expanded(
-                          child: filtered.isEmpty
-                              ? const Center(child: Text('Sin resultados'))
-                              : ListView.builder(
-                                  itemCount: filtered.length,
-                                  itemBuilder: (_, i) {
-                                    final doc = filtered[i];
-                                    return ListTile(
-                                      leading: const Icon(
-                                        Icons.directions_car_filled_outlined,
-                                      ),
-                                      title: Text(
-                                        _vehicleTitleFromData(doc.data()),
-                                      ),
-                                      onTap: () => Navigator.pop(ctx, doc),
-                                    );
-                                  },
-                                ),
-                        ),
-                      ],
+    final picked = await showDialog<VehicleLookup>(
+      context: context,
+      builder: (ctx) {
+        String q = '';
+        return StatefulBuilder(
+          builder: (ctx, setLocal) {
+            final filtered = _vehicleDocs.where((vehicle) {
+              final hay = [
+                vehicle.brand,
+                vehicle.model,
+                vehicle.plate,
+                vehicle.year,
+              ].join(' ').toLowerCase();
+              return hay.contains(q.toLowerCase());
+            }).toList();
+            return AlertDialog(
+              title: const Text('Seleccionar veh\u00edculo'),
+              content: SizedBox(
+                width: 500,
+                height: 420,
+                child: Column(
+                  children: [
+                    TextField(
+                      decoration: const InputDecoration(
+                        labelText: 'Buscar veh\u00edculo',
+                        prefixIcon: Icon(Icons.search),
+                        border: OutlineInputBorder(),
+                      ),
+                      onChanged: (v) => setLocal(() => q = v),
                     ),
-                  ),
-                  actions: [
-                    TextButton(
-                      onPressed: () => Navigator.pop(ctx),
-                      child: const Text('Cancelar'),
+                    const SizedBox(height: 10),
+                    Expanded(
+                      child: filtered.isEmpty
+                          ? const Center(child: Text('Sin resultados'))
+                          : ListView.builder(
+                              itemCount: filtered.length,
+                              itemBuilder: (_, i) {
+                                final vehicle = filtered[i];
+                                return ListTile(
+                                  leading: const Icon(
+                                    Icons.directions_car_filled_outlined,
+                                  ),
+                                  title: Text(_vehicleTitleFromData(vehicle)),
+                                  onTap: () => Navigator.pop(ctx, vehicle),
+                                );
+                              },
+                            ),
                     ),
                   ],
-                );
-              },
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(ctx),
+                  child: const Text('Cancelar'),
+                ),
+              ],
             );
           },
         );
+      },
+    );
 
     if (picked == null) return;
     setState(() {
       _vehicleId = picked.id;
-      _vehicleTitle = _vehicleTitleFromData(picked.data());
+      _vehicleTitle = _vehicleTitleFromData(picked);
     });
   }
 
@@ -895,9 +866,7 @@ class _BudgetFormScreenState extends State<BudgetFormScreen> {
         'vehicleTitle': _vehicleTitle.trim().isEmpty
             ? 'Veh\u00edculo'
             : _vehicleTitle.trim(),
-        'date': Timestamp.fromDate(
-          DateTime(_date.year, _date.month, _date.day),
-        ),
+        'date': DateTime(_date.year, _date.month, _date.day),
         'problemDescription': _problem.text.trim(),
         'estimatedDays': _parseDays(),
         'usePartsItems': _usePartsItems,
@@ -907,18 +876,17 @@ class _BudgetFormScreenState extends State<BudgetFormScreen> {
         'totalEstimated': total,
         'observations': _obs.text.trim(),
         'status': _status.trim().isEmpty ? 'Pendiente' : _status.trim(),
-        'updatedAt': FieldValue.serverTimestamp(),
       };
 
       if (_currentBudgetId == null) {
-        data['createdAt'] = FieldValue.serverTimestamp();
-        final ref = await _budgetsCol.add(data);
-        _currentBudgetId = ref.id;
+        _currentBudgetId = await _repo.saveBudget(uid: _uid, data: data);
         _status = 'Pendiente';
       } else {
-        await _budgetsCol
-            .doc(_currentBudgetId)
-            .set(data, SetOptions(merge: true));
+        await _repo.saveBudget(
+          uid: _uid,
+          data: data,
+          budgetId: _currentBudgetId,
+        );
       }
 
       if (!mounted) return _currentBudgetId;
@@ -991,52 +959,25 @@ class _BudgetFormScreenState extends State<BudgetFormScreen> {
       if (_usePartsItems) _syncPartsTotalFromItems();
       final labor = _parseGs(_labor.text);
       final parts = _parseGs(_parts.text);
-      final total = labor + parts;
       final desc = _problem.text.trim();
       final obs = _obs.text.trim();
       final fullDesc = obs.isEmpty
           ? desc
           : '$desc\n\nObservaciones del presupuesto:\n$obs';
-
-      final repairRef = FirebaseFirestore.instance
-          .collection('users')
-          .doc(_uid)
-          .collection('customers')
-          .doc(_customerId)
-          .collection('vehicles')
-          .doc(_vehicleId)
-          .collection('repairs')
-          .doc();
-
-      final repairData = <String, dynamic>{
-        'title': _buildRepairTitle(),
-        'km': '',
-        'description': fullDesc,
-        'status': 'Abierta',
-        'labor': labor,
-        'parts': parts,
-        'total': total,
-        'usePartsItems': _usePartsItems,
-        'partsItems': partsItems,
-        'customerId': _customerId,
-        'customerName': _customerName,
-        'vehicleId': _vehicleId,
-        'vehicleTitle': _vehicleTitle,
-        'sourceBudgetId': budgetId,
-        'createdAt': FieldValue.serverTimestamp(),
-        'updatedAt': FieldValue.serverTimestamp(),
-      };
-
-      final batch = FirebaseFirestore.instance.batch();
-      batch.set(repairRef, repairData);
-      batch.set(_budgetsCol.doc(budgetId), {
-        'status': 'Aprobado',
-        'approvedAt': FieldValue.serverTimestamp(),
-        'repairId': repairRef.id,
-        'repairPath': repairRef.path,
-        'updatedAt': FieldValue.serverTimestamp(),
-      }, SetOptions(merge: true));
-      await batch.commit();
+      final repairId = await _repo.approveAndConvert(
+        uid: _uid,
+        budgetId: budgetId,
+        customerId: _customerId!,
+        vehicleId: _vehicleId!,
+        customerName: _customerName,
+        vehicleTitle: _vehicleTitle,
+        repairTitle: _buildRepairTitle(),
+        repairDescription: fullDesc,
+        usePartsItems: _usePartsItems,
+        partsItems: partsItems,
+        labor: labor,
+        parts: parts,
+      );
 
       _status = 'Aprobado';
       if (mounted) setState(() {});
@@ -1078,7 +1019,7 @@ class _BudgetFormScreenState extends State<BudgetFormScreen> {
               vehicleTitle: _vehicleTitle.trim().isEmpty
                   ? 'Veh\u00edculo'
                   : _vehicleTitle.trim(),
-              repairId: repairRef.id,
+              repairId: repairId,
               customerName: _customerName,
             ),
           ),
@@ -1095,19 +1036,7 @@ class _BudgetFormScreenState extends State<BudgetFormScreen> {
   }
 
   Future<Map<String, dynamic>> _loadWorkshopProfile() async {
-    final snap = await FirebaseFirestore.instance
-        .collection('users')
-        .doc(_uid)
-        .get();
-    final data = snap.data() ?? {};
-    final profile = (data['profile'] as Map<String, dynamic>?) ?? {};
-    return {
-      'name': (profile['name'] ?? '').toString().trim(),
-      'owner': (profile['owner'] ?? '').toString().trim(),
-      'address': (profile['address'] ?? '').toString().trim(),
-      'phone': (profile['phone'] ?? '').toString().trim(),
-      'ruc': (profile['ruc'] ?? '').toString().trim(),
-    };
+    return _repo.loadWorkshopProfile(_uid);
   }
 
   pw.Widget _pdfInfoLine(String label, String value) {
