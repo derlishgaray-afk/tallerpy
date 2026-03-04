@@ -3,6 +3,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 
+import '../../services/repairs_hub_repository.dart';
 import 'repair_detail_screen.dart';
 import 'repair_form_screen.dart';
 
@@ -17,7 +18,8 @@ class _RepairsHubScreenState extends State<RepairsHubScreen> {
   final _search = TextEditingController();
   String _q = '';
   String _statusFilter = 'Todas';
-  late Future<List<_RepairItem>> _futureRepairs;
+  final _repo = RepairsHubRepository();
+  late Future<List<RepairHubItem>> _futureRepairs;
 
   static final NumberFormat _gsFmt = NumberFormat.decimalPattern('es_PY');
   static final DateFormat _dateFmt = DateFormat('dd/MM/yyyy');
@@ -32,16 +34,16 @@ class _RepairsHubScreenState extends State<RepairsHubScreen> {
 
   String get _uid => FirebaseAuth.instance.currentUser!.uid;
 
-  CollectionReference<Map<String, dynamic>> get _customersCol => FirebaseFirestore
-      .instance
-      .collection('users')
-      .doc(_uid)
-      .collection('customers');
+  CollectionReference<Map<String, dynamic>> get _customersCol =>
+      FirebaseFirestore.instance
+          .collection('users')
+          .doc(_uid)
+          .collection('customers');
 
   @override
   void initState() {
     super.initState();
-    _futureRepairs = _loadRepairs();
+    _futureRepairs = _repo.loadRepairsForUser(_uid);
   }
 
   @override
@@ -50,10 +52,14 @@ class _RepairsHubScreenState extends State<RepairsHubScreen> {
     super.dispose();
   }
 
-  void _reload() {
-    setState(() {
-      _futureRepairs = _loadRepairs();
-    });
+  Future<void> _reload() async {
+    final next = _repo.loadRepairsForUser(_uid);
+    setState(() => _futureRepairs = next);
+    try {
+      await next;
+    } catch (_) {
+      // El error ya lo maneja FutureBuilder.
+    }
   }
 
   String _vehicleTitleFromData(Map<String, dynamic> d) {
@@ -63,11 +69,6 @@ class _RepairsHubScreenState extends State<RepairsHubScreen> {
     final base = [brand, model].where((e) => e.isNotEmpty).join(' ').trim();
     if (plate.isEmpty) return base.isEmpty ? 'Vehiculo' : base;
     return base.isEmpty ? plate : '$base - $plate';
-  }
-
-  Timestamp? _ts(dynamic v) {
-    if (v is Timestamp) return v;
-    return null;
   }
 
   String _status(Map<String, dynamic> d) {
@@ -102,60 +103,6 @@ class _RepairsHubScreenState extends State<RepairsHubScreen> {
   String _date(dynamic ts) {
     if (ts is Timestamp) return _dateFmt.format(ts.toDate());
     return '';
-  }
-
-  Future<List<_RepairItem>> _loadRepairs() async {
-    final customersSnap = await _customersCol.get();
-    final items = <_RepairItem>[];
-
-    for (final customerDoc in customersSnap.docs) {
-      final customerId = customerDoc.id;
-      final customerData = customerDoc.data();
-      final customerName =
-          (customerData['name'] ?? 'Cliente').toString().trim();
-
-      final vehiclesSnap =
-          await customerDoc.reference.collection('vehicles').get();
-
-      for (final vehicleDoc in vehiclesSnap.docs) {
-        final vehicleId = vehicleDoc.id;
-        final vehicleData = vehicleDoc.data();
-        final vehicleTitle = _vehicleTitleFromData(vehicleData);
-
-        final repairsSnap = await vehicleDoc.reference
-            .collection('repairs')
-            .orderBy('updatedAt', descending: true)
-            .get();
-
-        for (final repairDoc in repairsSnap.docs) {
-          final data = repairDoc.data();
-          if ((data['customerName'] ?? '').toString().trim().isEmpty) {
-            data['customerName'] = customerName;
-          }
-          if ((data['vehicleTitle'] ?? '').toString().trim().isEmpty) {
-            data['vehicleTitle'] = vehicleTitle;
-          }
-          items.add(
-            _RepairItem(
-              customerId: customerId,
-              vehicleId: vehicleId,
-              repairId: repairDoc.id,
-              data: data,
-            ),
-          );
-        }
-      }
-    }
-
-    items.sort((a, b) {
-      final bTs =
-          _ts(b.data['updatedAt']) ?? _ts(b.data['createdAt']) ?? Timestamp(0, 0);
-      final aTs =
-          _ts(a.data['updatedAt']) ?? _ts(a.data['createdAt']) ?? Timestamp(0, 0);
-      return bTs.compareTo(aTs);
-    });
-
-    return items;
   }
 
   Future<_PickedCustomer?> _pickCustomer() async {
@@ -209,20 +156,21 @@ class _RepairsHubScreenState extends State<RepairsHubScreen> {
                               itemBuilder: (_, i) {
                                 final doc = filtered[i];
                                 final d = doc.data();
-                                final name =
-                                    (d['name'] ?? 'Cliente').toString().trim();
+                                final name = (d['name'] ?? 'Cliente')
+                                    .toString()
+                                    .trim();
                                 return ListTile(
-                                  leading:
-                                      const Icon(Icons.people_alt_outlined),
-                                  title: Text(
-                                    name.isEmpty ? 'Cliente' : name,
+                                  leading: const Icon(
+                                    Icons.people_alt_outlined,
                                   ),
+                                  title: Text(name.isEmpty ? 'Cliente' : name),
                                   onTap: () => Navigator.pop(
                                     ctx,
                                     _PickedCustomer(
                                       customerId: doc.id,
-                                      customerName:
-                                          name.isEmpty ? 'Cliente' : name,
+                                      customerName: name.isEmpty
+                                          ? 'Cliente'
+                                          : name,
                                     ),
                                   ),
                                 );
@@ -352,14 +300,12 @@ class _RepairsHubScreenState extends State<RepairsHubScreen> {
       ),
     );
     if (!mounted) return;
-    _reload();
+    await _reload();
   }
 
-  Future<void> _openDetail(_RepairItem item) async {
-    final vehicleTitle =
-        (item.data['vehicleTitle'] ?? '').toString().trim();
-    final customerName =
-        (item.data['customerName'] ?? '').toString().trim();
+  Future<void> _openDetail(RepairHubItem item) async {
+    final vehicleTitle = (item.data['vehicleTitle'] ?? '').toString().trim();
+    final customerName = (item.data['customerName'] ?? '').toString().trim();
 
     await Navigator.push(
       context,
@@ -374,7 +320,7 @@ class _RepairsHubScreenState extends State<RepairsHubScreen> {
       ),
     );
     if (!mounted) return;
-    _reload();
+    await _reload();
   }
 
   @override
@@ -426,7 +372,7 @@ class _RepairsHubScreenState extends State<RepairsHubScreen> {
             ),
             const SizedBox(height: 10),
             Expanded(
-              child: FutureBuilder<List<_RepairItem>>(
+              child: FutureBuilder<List<RepairHubItem>>(
                 future: _futureRepairs,
                 builder: (context, snap) {
                   if (snap.hasError) {
@@ -457,9 +403,7 @@ class _RepairsHubScreenState extends State<RepairsHubScreen> {
                           Expanded(
                             child: Text(
                               'Mostrando ${filtered.length} / ${all.length}   •   Total: ${_gsFmt.format(total.round())}',
-                              style: Theme.of(context)
-                                  .textTheme
-                                  .bodyMedium
+                              style: Theme.of(context).textTheme.bodyMedium
                                   ?.copyWith(fontWeight: FontWeight.w700),
                               overflow: TextOverflow.ellipsis,
                             ),
@@ -471,7 +415,7 @@ class _RepairsHubScreenState extends State<RepairsHubScreen> {
 
                   if (filtered.isEmpty) {
                     return RefreshIndicator(
-                      onRefresh: () async => _reload(),
+                      onRefresh: _reload,
                       child: ListView(
                         children: [
                           summary,
@@ -497,20 +441,23 @@ class _RepairsHubScreenState extends State<RepairsHubScreen> {
                   }
 
                   return RefreshIndicator(
-                    onRefresh: () async => _reload(),
+                    onRefresh: _reload,
                     child: ListView.separated(
                       itemCount: filtered.length + 1,
-                      separatorBuilder: (_, index) => const SizedBox(height: 10),
+                      separatorBuilder: (_, index) =>
+                          const SizedBox(height: 10),
                       itemBuilder: (_, i) {
                         if (i == 0) return summary;
                         final item = filtered[i - 1];
                         final d = item.data;
                         final title = (d['title'] ?? '').toString().trim();
                         final status = _status(d);
-                        final customerName =
-                            (d['customerName'] ?? '').toString().trim();
-                        final vehicleTitle =
-                            (d['vehicleTitle'] ?? '').toString().trim();
+                        final customerName = (d['customerName'] ?? '')
+                            .toString()
+                            .trim();
+                        final vehicleTitle = (d['vehicleTitle'] ?? '')
+                            .toString()
+                            .trim();
                         final date = _date(d['createdAt']);
                         final totalGs = _gsFmt.format(_num(d['total']).round());
 
@@ -557,38 +504,18 @@ class _RepairsHubScreenState extends State<RepairsHubScreen> {
   }
 }
 
-class _RepairItem {
-  final String customerId;
-  final String vehicleId;
-  final String repairId;
-  final Map<String, dynamic> data;
-
-  const _RepairItem({
-    required this.customerId,
-    required this.vehicleId,
-    required this.repairId,
-    required this.data,
-  });
-}
-
 class _PickedCustomer {
   final String customerId;
   final String customerName;
 
-  const _PickedCustomer({
-    required this.customerId,
-    required this.customerName,
-  });
+  const _PickedCustomer({required this.customerId, required this.customerName});
 }
 
 class _PickedVehicle {
   final String vehicleId;
   final String vehicleTitle;
 
-  const _PickedVehicle({
-    required this.vehicleId,
-    required this.vehicleTitle,
-  });
+  const _PickedVehicle({required this.vehicleId, required this.vehicleTitle});
 }
 
 class _StatusPill extends StatelessWidget {
@@ -608,4 +535,3 @@ class _StatusPill extends StatelessWidget {
     );
   }
 }
-
