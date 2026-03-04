@@ -1,7 +1,8 @@
-﻿import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
+import '../../services/all_vehicles_repository.dart';
 import '../customers/customer_vehicles_screen.dart';
 import '../customers/vehicle_detail_screen.dart';
 
@@ -14,14 +15,11 @@ class AllVehiclesScreen extends StatefulWidget {
 
 class _AllVehiclesScreenState extends State<AllVehiclesScreen> {
   final _search = TextEditingController();
+  final _repo = AllVehiclesRepository();
   String _q = '';
+  late Future<List<VehicleSearchItem>> _futureVehicles;
 
   String get _uid => FirebaseAuth.instance.currentUser!.uid;
-
-  final Map<String, String> _customerNames = {};
-  final Map<String, List<QueryDocumentSnapshot<Map<String, dynamic>>>>
-      _vehiclesByCustomer = {};
-  final Set<String> _loadingVehicles = {};
 
   CollectionReference<Map<String, dynamic>> _customersCol() {
     return FirebaseFirestore.instance
@@ -30,23 +28,25 @@ class _AllVehiclesScreenState extends State<AllVehiclesScreen> {
         .collection('customers');
   }
 
-  Future<void> _ensureVehicles(String customerId) async {
-    if (_vehiclesByCustomer.containsKey(customerId)) return;
-    if (_loadingVehicles.contains(customerId)) return;
-    _loadingVehicles.add(customerId);
+  @override
+  void initState() {
+    super.initState();
+    _futureVehicles = _repo.loadVehiclesForUser(_uid);
+  }
+
+  @override
+  void dispose() {
+    _search.dispose();
+    super.dispose();
+  }
+
+  Future<void> _reloadVehicles() async {
+    final next = _repo.loadVehiclesForUser(_uid);
+    setState(() => _futureVehicles = next);
     try {
-      final snap = await _customersCol()
-          .doc(customerId)
-          .collection('vehicles')
-          .orderBy('updatedAt', descending: true)
-          .get();
-      if (!mounted) return;
-      setState(() => _vehiclesByCustomer[customerId] = snap.docs);
+      await next;
     } catch (_) {
-      if (!mounted) return;
-      setState(() => _vehiclesByCustomer[customerId] = []);
-    } finally {
-      _loadingVehicles.remove(customerId);
+      // El error se maneja en FutureBuilder.
     }
   }
 
@@ -57,10 +57,10 @@ class _AllVehiclesScreenState extends State<AllVehiclesScreen> {
   String _vehicleTitle(Map<String, dynamic> d) {
     final brand = (d['brand'] ?? '').toString();
     final model = (d['model'] ?? '').toString();
-    final title = [brand, model]
-        .where((x) => x.trim().isNotEmpty)
-        .join(' ')
-        .trim();
+    final title = [
+      brand,
+      model,
+    ].where((x) => x.trim().isNotEmpty).join(' ').trim();
     return title.isEmpty ? 'Vehículo' : title;
   }
 
@@ -74,25 +74,29 @@ class _AllVehiclesScreenState extends State<AllVehiclesScreen> {
     return parts.join('   •   ');
   }
 
-  void _openCustomerVehicles(BuildContext context, String id, String name) {
-    Navigator.push(
+  Future<void> _openCustomerVehicles(
+    BuildContext context,
+    String id,
+    String name,
+  ) async {
+    await Navigator.push(
       context,
       MaterialPageRoute(
-        builder: (_) => CustomerVehiclesScreen(
-          customerId: id,
-          customerName: name,
-        ),
+        builder: (_) =>
+            CustomerVehiclesScreen(customerId: id, customerName: name),
       ),
     );
+    if (!mounted) return;
+    await _reloadVehicles();
   }
 
-  void _openVehicleDetail(
+  Future<void> _openVehicleDetail(
     BuildContext context,
     String customerId,
     String customerName,
     String vehicleId,
-  ) {
-    Navigator.push(
+  ) async {
+    await Navigator.push(
       context,
       MaterialPageRoute(
         builder: (_) => VehicleDetailScreen(
@@ -102,18 +106,23 @@ class _AllVehiclesScreenState extends State<AllVehiclesScreen> {
         ),
       ),
     );
-  }
-
-  @override
-  void dispose() {
-    _search.dispose();
-    super.dispose();
+    if (!mounted) return;
+    await _reloadVehicles();
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Lista de Vehículos')),
+      appBar: AppBar(
+        title: const Text('Lista de Vehículos'),
+        actions: [
+          IconButton(
+            tooltip: 'Recargar',
+            onPressed: _reloadVehicles,
+            icon: const Icon(Icons.refresh),
+          ),
+        ],
+      ),
       body: Column(
         children: [
           Padding(
@@ -131,15 +140,15 @@ class _AllVehiclesScreenState extends State<AllVehiclesScreen> {
           Expanded(
             child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
               stream: _customersCol().orderBy('name').snapshots(),
-              builder: (context, snapshot) {
-                if (snapshot.hasError) {
-                  return Center(child: Text('Error: ${snapshot.error}'));
+              builder: (context, customersSnap) {
+                if (customersSnap.hasError) {
+                  return Center(child: Text('Error: ${customersSnap.error}'));
                 }
-                if (snapshot.connectionState == ConnectionState.waiting) {
+                if (customersSnap.connectionState == ConnectionState.waiting) {
                   return const Center(child: CircularProgressIndicator());
                 }
 
-                final docs = snapshot.data?.docs ?? [];
+                final docs = customersSnap.data?.docs ?? [];
                 if (docs.isEmpty) {
                   return const Center(
                     child: Padding(
@@ -156,10 +165,10 @@ class _AllVehiclesScreenState extends State<AllVehiclesScreen> {
                   );
                 }
 
-                for (final doc in docs) {
-                  final name = (doc.data()['name'] ?? '').toString().trim();
-                  _customerNames[doc.id] = name;
-                }
+                final customerNames = <String, String>{
+                  for (final doc in docs)
+                    doc.id: (doc.data()['name'] ?? '').toString().trim(),
+                };
 
                 final hasQuery = _q.isNotEmpty;
                 if (!hasQuery) {
@@ -196,7 +205,8 @@ class _AllVehiclesScreenState extends State<AllVehiclesScreen> {
                   );
                 }
 
-                final filteredCustomers = <QueryDocumentSnapshot<Map<String, dynamic>>>[];
+                final filteredCustomers =
+                    <QueryDocumentSnapshot<Map<String, dynamic>>>[];
                 for (final doc in docs) {
                   final d = doc.data();
                   final name = (d['name'] ?? '').toString();
@@ -207,104 +217,124 @@ class _AllVehiclesScreenState extends State<AllVehiclesScreen> {
                       _match(ruc.toLowerCase(), _q)) {
                     filteredCustomers.add(doc);
                   }
-                  if (!_vehiclesByCustomer.containsKey(doc.id)) {
-                    _ensureVehicles(doc.id);
-                  }
                 }
 
-                final vehicleTiles = <Widget>[];
-                for (final entry in _vehiclesByCustomer.entries) {
-                  final customerId = entry.key;
-                  final customerName = _customerNames[customerId] ?? 'Cliente';
-                  for (final vdoc in entry.value) {
-                    final d = vdoc.data();
-                    final hay = [
-                      (d['brand'] ?? '').toString(),
-                      (d['model'] ?? '').toString(),
-                      (d['plate'] ?? '').toString(),
-                      (d['year'] ?? '').toString(),
-                    ].join(' ').toLowerCase();
-                    if (!_match(hay, _q)) continue;
-                    final title = _vehicleTitle(d);
-                    final subtitle = _vehicleSubtitle(d);
-                    vehicleTiles.add(
-                      Card(
-                        child: ListTile(
-                          leading:
-                              const Icon(Icons.directions_car_filled_outlined),
-                          title: Text(title),
-                          subtitle: subtitle.isEmpty ? null : Text(subtitle),
-                          trailing: Text(customerName),
-                          onTap: () => _openVehicleDetail(
-                            context,
-                            customerId,
-                            customerName,
-                            vdoc.id,
-                          ),
-                        ),
-                      ),
-                    );
-                  }
-                }
-
-                if (filteredCustomers.isEmpty && vehicleTiles.isEmpty) {
-                  return const Center(
-                    child: Padding(
-                      padding: EdgeInsets.all(24),
-                      child: Text('Sin resultados.'),
-                    ),
-                  );
-                }
-
-                return ListView(
-                  padding: const EdgeInsets.all(12),
-                  children: [
-                    if (filteredCustomers.isNotEmpty) ...[
-                      const Padding(
-                        padding: EdgeInsets.only(bottom: 8),
+                return FutureBuilder<List<VehicleSearchItem>>(
+                  future: _futureVehicles,
+                  builder: (context, vehiclesSnap) {
+                    if (vehiclesSnap.hasError) {
+                      return Center(
                         child: Text(
-                          'Clientes',
-                          style: TextStyle(fontWeight: FontWeight.bold),
+                          'Error cargando vehículos: ${vehiclesSnap.error}',
                         ),
-                      ),
-                      ...filteredCustomers.map((doc) {
-                        final d = doc.data();
-                        final name = (d['name'] ?? '').toString().trim();
-                        final phone = (d['phone'] ?? '').toString().trim();
-                        final ruc = (d['ruc'] ?? '').toString().trim();
-                        final subtitleParts = <String>[
-                          if (phone.isNotEmpty) phone,
-                          if (ruc.isNotEmpty) 'RUC/CI: $ruc',
-                        ];
-                        final subtitle = subtitleParts.join('   •   ');
-                        return Card(
+                      );
+                    }
+                    if (vehiclesSnap.connectionState ==
+                            ConnectionState.waiting &&
+                        vehiclesSnap.data == null) {
+                      return const Center(child: CircularProgressIndicator());
+                    }
+
+                    final vehicles =
+                        vehiclesSnap.data ?? const <VehicleSearchItem>[];
+                    final vehicleTiles = <Widget>[];
+
+                    for (final item in vehicles) {
+                      final d = item.data;
+                      final hay = [
+                        (d['brand'] ?? '').toString(),
+                        (d['model'] ?? '').toString(),
+                        (d['plate'] ?? '').toString(),
+                        (d['year'] ?? '').toString(),
+                      ].join(' ').toLowerCase();
+                      if (!_match(hay, _q)) continue;
+
+                      final customerName =
+                          customerNames[item.customerId] ?? 'Cliente';
+                      final title = _vehicleTitle(d);
+                      final subtitle = _vehicleSubtitle(d);
+
+                      vehicleTiles.add(
+                        Card(
                           child: ListTile(
-                            leading: const Icon(Icons.people_alt_outlined),
-                            title: Text(name.isEmpty ? 'Cliente' : name),
-                            subtitle:
-                                subtitle.isEmpty ? null : Text(subtitle),
-                            trailing: const Icon(Icons.chevron_right),
-                            onTap: () => _openCustomerVehicles(
+                            leading: const Icon(
+                              Icons.directions_car_filled_outlined,
+                            ),
+                            title: Text(title),
+                            subtitle: subtitle.isEmpty ? null : Text(subtitle),
+                            trailing: Text(customerName),
+                            onTap: () => _openVehicleDetail(
                               context,
-                              doc.id,
-                              name.isEmpty ? 'Cliente' : name,
+                              item.customerId,
+                              customerName,
+                              item.vehicleId,
                             ),
                           ),
-                        );
-                      }),
-                      const SizedBox(height: 8),
-                    ],
-                    if (vehicleTiles.isNotEmpty) ...[
-                      const Padding(
-                        padding: EdgeInsets.only(bottom: 8),
-                        child: Text(
-                          'Vehículos',
-                          style: TextStyle(fontWeight: FontWeight.bold),
                         ),
-                      ),
-                      ...vehicleTiles,
-                    ],
-                  ],
+                      );
+                    }
+
+                    if (filteredCustomers.isEmpty && vehicleTiles.isEmpty) {
+                      return const Center(
+                        child: Padding(
+                          padding: EdgeInsets.all(24),
+                          child: Text('Sin resultados.'),
+                        ),
+                      );
+                    }
+
+                    return ListView(
+                      padding: const EdgeInsets.all(12),
+                      children: [
+                        if (filteredCustomers.isNotEmpty) ...[
+                          const Padding(
+                            padding: EdgeInsets.only(bottom: 8),
+                            child: Text(
+                              'Clientes',
+                              style: TextStyle(fontWeight: FontWeight.bold),
+                            ),
+                          ),
+                          ...filteredCustomers.map((doc) {
+                            final d = doc.data();
+                            final name = (d['name'] ?? '').toString().trim();
+                            final phone = (d['phone'] ?? '').toString().trim();
+                            final ruc = (d['ruc'] ?? '').toString().trim();
+                            final subtitleParts = <String>[
+                              if (phone.isNotEmpty) phone,
+                              if (ruc.isNotEmpty) 'RUC/CI: $ruc',
+                            ];
+                            final subtitle = subtitleParts.join('   •   ');
+                            return Card(
+                              child: ListTile(
+                                leading: const Icon(Icons.people_alt_outlined),
+                                title: Text(name.isEmpty ? 'Cliente' : name),
+                                subtitle: subtitle.isEmpty
+                                    ? null
+                                    : Text(subtitle),
+                                trailing: const Icon(Icons.chevron_right),
+                                onTap: () => _openCustomerVehicles(
+                                  context,
+                                  doc.id,
+                                  name.isEmpty ? 'Cliente' : name,
+                                ),
+                              ),
+                            );
+                          }),
+                          const SizedBox(height: 8),
+                        ],
+                        if (vehicleTiles.isNotEmpty) ...[
+                          const Padding(
+                            padding: EdgeInsets.only(bottom: 8),
+                            child: Text(
+                              'Vehículos',
+                              style: TextStyle(fontWeight: FontWeight.bold),
+                            ),
+                          ),
+                          ...vehicleTiles,
+                        ],
+                      ],
+                    );
+                  },
                 );
               },
             ),
@@ -314,4 +344,3 @@ class _AllVehiclesScreenState extends State<AllVehiclesScreen> {
     );
   }
 }
-
