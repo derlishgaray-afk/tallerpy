@@ -1,8 +1,11 @@
-import 'package:cloud_firestore/cloud_firestore.dart';
+import 'dart:async';
+
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 
+import '../../features/budgets/data/models/budget_model.dart';
+import '../../features/budgets/data/repositories/budgets_repository.dart';
 import 'budget_form_screen.dart';
 
 class BudgetsScreen extends StatefulWidget {
@@ -24,22 +27,31 @@ class BudgetsScreen extends StatefulWidget {
 }
 
 class _BudgetsScreenState extends State<BudgetsScreen> {
+  static const int _pageSize = 25;
+
   final _search = TextEditingController();
+  final _repo = BudgetsRepository();
+  final List<BudgetModel> _docs = [];
+
   String _q = '';
   String _statusFilter = 'Todas';
 
+  bool _loadingFirstPage = true;
+  bool _loadingNextPage = false;
+  bool _hasMore = true;
+  Object? _loadError;
+
   static final NumberFormat _gsFmt = NumberFormat.decimalPattern('es_PY');
   static final DateFormat _dateFmt = DateFormat('dd/MM/yyyy');
-
   static const List<String> _statusOptions = ['Todas', 'Pendiente', 'Aprobado'];
 
   String get _uid => FirebaseAuth.instance.currentUser!.uid;
 
-  CollectionReference<Map<String, dynamic>> get _budgetsCol => FirebaseFirestore
-      .instance
-      .collection('users')
-      .doc(_uid)
-      .collection('budgets');
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_resetAndLoad());
+  }
 
   @override
   void dispose() {
@@ -47,52 +59,113 @@ class _BudgetsScreenState extends State<BudgetsScreen> {
     super.dispose();
   }
 
-  bool _matchesFixedScope(Map<String, dynamic> d) {
-    if (widget.customerId != null &&
-        d['customerId'].toString().trim() != widget.customerId) {
-      return false;
-    }
-    if (widget.vehicleId != null &&
-        d['vehicleId'].toString().trim() != widget.vehicleId) {
-      return false;
-    }
-    return true;
+  Future<void> _resetAndLoad() async {
+    if (!mounted) return;
+    setState(() {
+      _docs.clear();
+      _hasMore = true;
+      _loadError = null;
+      _loadingFirstPage = true;
+      _loadingNextPage = false;
+    });
+    await _loadNextPage(isFirstPage: true);
   }
 
-  bool _matchesSearch(Map<String, dynamic> d) {
+  Future<void> _loadNextPage({bool isFirstPage = false}) async {
+    if (_loadingNextPage) return;
+    if (!isFirstPage && !_hasMore) return;
+
+    if (!mounted) return;
+    setState(() {
+      _loadingNextPage = true;
+      if (isFirstPage) _loadingFirstPage = true;
+      _loadError = null;
+    });
+
+    try {
+      final page = isFirstPage
+          ? await _repo.fetchFirstPage(
+              uid: _uid,
+              customerId: widget.customerId,
+              vehicleId: widget.vehicleId,
+              statusFilter: _statusFilter,
+              limit: _pageSize,
+            )
+          : await _repo.fetchNextPage(
+              uid: _uid,
+              customerId: widget.customerId,
+              vehicleId: widget.vehicleId,
+              statusFilter: _statusFilter,
+              limit: _pageSize,
+            );
+      if (!mounted) return;
+
+      setState(() {
+        if (isFirstPage) {
+          _docs.clear();
+        }
+        _docs.addAll(page.items);
+        _hasMore = page.hasMore;
+        _loadingFirstPage = false;
+        _loadingNextPage = false;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _loadError = e;
+        _loadingFirstPage = false;
+        _loadingNextPage = false;
+      });
+    }
+  }
+
+  bool _matchesSearch(BudgetModel budget) {
     final q = _q.trim().toLowerCase();
     if (q.isEmpty) return true;
 
     final hay = [
-      (d['customerName'] ?? '').toString(),
-      (d['vehicleTitle'] ?? '').toString(),
-      (d['problemDescription'] ?? '').toString(),
-      (d['observations'] ?? '').toString(),
-      (d['status'] ?? '').toString(),
+      budget.customerName,
+      budget.vehicleTitle,
+      budget.problemDescription,
+      budget.observations,
+      budget.status,
     ].join(' ').toLowerCase();
 
     return hay.contains(q);
   }
 
-  bool _matchesStatus(Map<String, dynamic> d) {
-    if (_statusFilter == 'Todas') return true;
-    final s = (d['status'] ?? 'Pendiente').toString().trim();
-    return s == _statusFilter;
-  }
-
-  num _num(dynamic v) {
-    if (v == null) return 0;
-    if (v is num) return v;
-    return num.tryParse(v.toString()) ?? 0;
-  }
-
   String _gs(num n) => _gsFmt.format(n.round());
 
-  String _date(dynamic v) {
-    if (v is Timestamp) {
-      return _dateFmt.format(v.toDate());
+  String _date(DateTime? value) {
+    if (value == null) return '';
+    return _dateFmt.format(value);
+  }
+
+  Map<String, dynamic> _toInitial(BudgetModel budget) {
+    return {
+      'title': budget.title,
+      'customerId': budget.customerId,
+      'customerName': budget.customerName,
+      'vehicleId': budget.vehicleId,
+      'vehicleTitle': budget.vehicleTitle,
+      'date': budget.date,
+      'problemDescription': budget.problemDescription,
+      'estimatedDays': budget.estimatedDays,
+      'usePartsItems': budget.usePartsItems,
+      'partsItems': budget.partsItems.map((item) => item.toMap()).toList(),
+      'partsEstimated': budget.partsEstimated,
+      'laborEstimated': budget.laborEstimated,
+      'totalEstimated': budget.totalEstimated,
+      'observations': budget.observations,
+      'status': budget.status,
+    };
+  }
+
+  String _errorText(Object? error) {
+    if (error is FirebaseException && error.code == 'failed-precondition') {
+      return 'La consulta requiere un indice de Firestore. Crea el indice sugerido en consola.';
     }
-    return '';
+    return 'Error: $error';
   }
 
   Future<void> _openForm({
@@ -114,6 +187,8 @@ class _BudgetsScreenState extends State<BudgetsScreen> {
         ),
       ),
     );
+    if (!mounted) return;
+    await _resetAndLoad();
   }
 
   @override
@@ -125,6 +200,34 @@ class _BudgetsScreenState extends State<BudgetsScreen> {
         ? 'Presupuestos'
         : 'Presupuestos - $customerTitle';
 
+    final filtered = _docs.where(_matchesSearch).toList();
+
+    num sumTotal = 0;
+    for (final budget in filtered) {
+      sumTotal += budget.totalEstimated;
+    }
+
+    final summary = Card(
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Row(
+          children: [
+            const Icon(Icons.summarize_outlined, size: 18),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                'Mostrando ${filtered.length} / ${_docs.length} cargados - Total estimado: ${_gs(sumTotal)} Gs.',
+                style: Theme.of(
+                  context,
+                ).textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w700),
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+
     return Scaffold(
       appBar: AppBar(
         title: Text(appTitle),
@@ -133,7 +236,11 @@ class _BudgetsScreenState extends State<BudgetsScreen> {
             : PreferredSize(
                 preferredSize: const Size.fromHeight(36),
                 child: Padding(
-                  padding: const EdgeInsets.only(left: 16, right: 16, bottom: 10),
+                  padding: const EdgeInsets.only(
+                    left: 16,
+                    right: 16,
+                    bottom: 10,
+                  ),
                   child: Align(
                     alignment: Alignment.centerLeft,
                     child: Text(
@@ -157,7 +264,7 @@ class _BudgetsScreenState extends State<BudgetsScreen> {
             TextField(
               controller: _search,
               decoration: InputDecoration(
-                labelText: 'Buscar (cliente, vehículo o descripción)',
+                labelText: 'Buscar (cliente, vehiculo o descripcion)',
                 prefixIcon: const Icon(Icons.search),
                 border: const OutlineInputBorder(),
                 suffixIcon: _search.text.isEmpty
@@ -184,134 +291,148 @@ class _BudgetsScreenState extends State<BudgetsScreen> {
                   return FilterChip(
                     label: Text(s),
                     selected: _statusFilter == s,
-                    onSelected: (_) => setState(() => _statusFilter = s),
+                    onSelected: (_) {
+                      if (_statusFilter == s) return;
+                      setState(() => _statusFilter = s);
+                      unawaited(_resetAndLoad());
+                    },
                   );
                 },
               ),
             ),
             const SizedBox(height: 10),
             Expanded(
-              child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-                stream: _budgetsCol.orderBy('updatedAt', descending: true).snapshots(),
-                builder: (context, snap) {
-                  if (snap.hasError) {
-                    return Center(child: Text('Error: ${snap.error}'));
-                  }
-                  if (snap.connectionState == ConnectionState.waiting) {
-                    return const Center(child: CircularProgressIndicator());
-                  }
-
-                  final docs = snap.data?.docs ?? [];
-                  final filtered = docs
-                      .where((d) => _matchesFixedScope(d.data()))
-                      .where((d) => _matchesSearch(d.data()))
-                      .where((d) => _matchesStatus(d.data()))
-                      .toList();
-
-                  num sumTotal = 0;
-                  for (final d in filtered) {
-                    sumTotal += _num(d.data()['totalEstimated']);
-                  }
-
-                  final summary = Card(
-                    child: Padding(
-                      padding: const EdgeInsets.all(12),
-                      child: Row(
+              child: _loadingFirstPage && _docs.isEmpty
+                  ? const Center(child: CircularProgressIndicator())
+                  : RefreshIndicator(
+                      onRefresh: _resetAndLoad,
+                      child: ListView(
                         children: [
-                          const Icon(Icons.summarize_outlined, size: 18),
-                          const SizedBox(width: 8),
-                          Expanded(
-                            child: Text(
-                              'Mostrando ${filtered.length} / ${docs.length}   •   Total estimado: ${_gs(sumTotal)} Gs.',
-                              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                                fontWeight: FontWeight.w700,
+                          summary,
+                          if (_loadError != null && _docs.isEmpty) ...[
+                            const SizedBox(height: 12),
+                            Card(
+                              child: Padding(
+                                padding: const EdgeInsets.all(12),
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(_errorText(_loadError)),
+                                    const SizedBox(height: 10),
+                                    FilledButton(
+                                      onPressed: () =>
+                                          _loadNextPage(isFirstPage: true),
+                                      child: const Text('Reintentar'),
+                                    ),
+                                  ],
+                                ),
                               ),
-                              overflow: TextOverflow.ellipsis,
                             ),
-                          ),
+                          ] else if (filtered.isEmpty) ...[
+                            const SizedBox(height: 12),
+                            const Center(
+                              child: Padding(
+                                padding: EdgeInsets.all(24),
+                                child: Column(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Icon(Icons.receipt_long_outlined, size: 56),
+                                    SizedBox(height: 12),
+                                    Text(
+                                      'No hay presupuestos con ese filtro o busqueda.',
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ),
+                          ] else ...[
+                            const SizedBox(height: 10),
+                            ...filtered.map((budget) {
+                              final customer =
+                                  budget.customerName.trim().isEmpty
+                                  ? 'Cliente'
+                                  : budget.customerName.trim();
+                              final vehicle = budget.vehicleTitle.trim().isEmpty
+                                  ? 'Vehiculo'
+                                  : budget.vehicleTitle.trim();
+                              final problem = budget.problemDescription.trim();
+                              final status = budget.status.trim().isEmpty
+                                  ? 'Pendiente'
+                                  : budget.status.trim();
+                              final date = _date(budget.date);
+                              final total = _gs(budget.totalEstimated);
+
+                              final subtitleParts = <String>[
+                                '$customer • $vehicle',
+                                if (date.isNotEmpty) 'Fecha: $date',
+                                'Total: $total Gs.',
+                              ];
+
+                              return Padding(
+                                padding: const EdgeInsets.only(bottom: 10),
+                                child: Card(
+                                  elevation: 2,
+                                  shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(14),
+                                  ),
+                                  child: ListTile(
+                                    leading: const CircleAvatar(
+                                      child: Icon(Icons.receipt_long_outlined),
+                                    ),
+                                    title: Text(
+                                      problem.isEmpty
+                                          ? '(Sin descripcion)'
+                                          : problem,
+                                      maxLines: 2,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: const TextStyle(
+                                        fontWeight: FontWeight.w600,
+                                      ),
+                                    ),
+                                    subtitle: Text(
+                                      subtitleParts.join('   •   '),
+                                      maxLines: 2,
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
+                                    trailing: _StatusPill(status: status),
+                                    onTap: () => _openForm(
+                                      budgetId: budget.id,
+                                      initial: _toInitial(budget),
+                                    ),
+                                  ),
+                                ),
+                              );
+                            }),
+                          ],
+                          if (_loadError != null && _docs.isNotEmpty) ...[
+                            Card(
+                              child: ListTile(
+                                title: Text(_errorText(_loadError)),
+                                trailing: TextButton(
+                                  onPressed: _loadNextPage,
+                                  child: const Text('Reintentar'),
+                                ),
+                              ),
+                            ),
+                          ],
+                          if (_loadingNextPage)
+                            const Padding(
+                              padding: EdgeInsets.all(16),
+                              child: Center(child: CircularProgressIndicator()),
+                            ),
+                          if (_hasMore && !_loadingNextPage)
+                            Padding(
+                              padding: const EdgeInsets.symmetric(vertical: 8),
+                              child: Center(
+                                child: OutlinedButton(
+                                  onPressed: _loadNextPage,
+                                  child: const Text('Cargar mas'),
+                                ),
+                              ),
+                            ),
                         ],
                       ),
                     ),
-                  );
-
-                  if (filtered.isEmpty) {
-                    return ListView(
-                      children: [
-                        summary,
-                        const SizedBox(height: 12),
-                        const Center(
-                          child: Padding(
-                            padding: EdgeInsets.all(24),
-                            child: Column(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                Icon(Icons.receipt_long_outlined, size: 56),
-                                SizedBox(height: 12),
-                                Text('No hay presupuestos con ese filtro/búsqueda.'),
-                              ],
-                            ),
-                          ),
-                        ),
-                      ],
-                    );
-                  }
-
-                  return ListView.separated(
-                    itemCount: filtered.length + 1,
-                    separatorBuilder: (_, index) => const SizedBox(height: 10),
-                    itemBuilder: (_, i) {
-                      if (i == 0) return summary;
-
-                      final doc = filtered[i - 1];
-                      final d = doc.data();
-
-                      final customer = (d['customerName'] ?? 'Cliente')
-                          .toString()
-                          .trim();
-                      final vehicle = (d['vehicleTitle'] ?? 'Vehículo')
-                          .toString()
-                          .trim();
-                      final problem = (d['problemDescription'] ?? '')
-                          .toString()
-                          .trim();
-                      final status = (d['status'] ?? 'Pendiente').toString().trim();
-                      final date = _date(d['date']);
-                      final total = _gs(_num(d['totalEstimated']));
-
-                      final subtitleParts = <String>[
-                        '$customer • $vehicle',
-                        if (date.isNotEmpty) 'Fecha: $date',
-                        'Total: $total Gs.',
-                      ];
-
-                      return Card(
-                        elevation: 2,
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(14),
-                        ),
-                        child: ListTile(
-                          leading: const CircleAvatar(
-                            child: Icon(Icons.receipt_long_outlined),
-                          ),
-                          title: Text(
-                            problem.isEmpty ? '(Sin descripción)' : problem,
-                            maxLines: 2,
-                            overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(fontWeight: FontWeight.w600),
-                          ),
-                          subtitle: Text(
-                            subtitleParts.join('   •   '),
-                            maxLines: 2,
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                          trailing: _StatusPill(status: status),
-                          onTap: () => _openForm(budgetId: doc.id, initial: d),
-                        ),
-                      );
-                    },
-                  );
-                },
-              ),
             ),
           ],
         ),
@@ -337,4 +458,3 @@ class _StatusPill extends StatelessWidget {
     );
   }
 }
-
