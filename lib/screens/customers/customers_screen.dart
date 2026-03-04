@@ -3,6 +3,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
 import '../../features/customers/data/models/customer_model.dart';
+import '../../features/customers/data/repositories/customers_repository.dart';
 import 'customer_detail_screen.dart';
 import 'customer_form_screen.dart';
 
@@ -15,12 +16,10 @@ class CustomersScreen extends StatefulWidget {
 
 class _CustomersScreenState extends State<CustomersScreen> {
   final _search = TextEditingController();
+  final _repo = CustomersRepository();
   String _q = '';
 
   String get _uid => FirebaseAuth.instance.currentUser!.uid;
-
-  CollectionReference<CustomerModel> get _col =>
-      CustomerModel.collectionForUser(FirebaseFirestore.instance, _uid);
 
   @override
   void dispose() {
@@ -79,7 +78,7 @@ class _CustomersScreenState extends State<CustomersScreen> {
     );
 
     if (ok != true) return;
-    await _col.doc(id).delete();
+    await _repo.deleteCustomer(_uid, id);
 
     if (!mounted) return;
     ScaffoldMessenger.of(
@@ -128,7 +127,7 @@ class _CustomersScreenState extends State<CustomersScreen> {
             const SizedBox(height: 12),
             Expanded(
               child: StreamBuilder<QuerySnapshot<CustomerModel>>(
-                stream: _col.orderBy('name').snapshots(),
+                stream: _repo.watchCustomersSnapshot(_uid),
                 builder: (context, snap) {
                   if (snap.connectionState == ConnectionState.waiting) {
                     return const Center(child: CircularProgressIndicator());

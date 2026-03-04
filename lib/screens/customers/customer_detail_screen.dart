@@ -3,20 +3,19 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
 import '../../features/customers/data/models/customer_model.dart';
+import '../../features/customers/data/repositories/customers_repository.dart';
 import 'customer_form_screen.dart';
 import 'customer_vehicles_screen.dart';
 
 class CustomerDetailScreen extends StatelessWidget {
   final String customerId;
+  static final CustomersRepository _repo = CustomersRepository();
 
   const CustomerDetailScreen({super.key, required this.customerId});
 
-  DocumentReference<CustomerModel> _customerRef() {
+  Stream<DocumentSnapshot<CustomerModel>> _customerStream() {
     final uid = FirebaseAuth.instance.currentUser!.uid;
-    return CustomerModel.collectionForUser(
-      FirebaseFirestore.instance,
-      uid,
-    ).doc(customerId);
+    return _repo.watchCustomerById(uid, customerId);
   }
 
   Map<String, dynamic> _toInitial(CustomerModel customer) {
@@ -32,7 +31,7 @@ class CustomerDetailScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return StreamBuilder<DocumentSnapshot<CustomerModel>>(
-      stream: _customerRef().snapshots(),
+      stream: _customerStream(),
       builder: (context, snapshot) {
         if (snapshot.hasError) {
           return Scaffold(
