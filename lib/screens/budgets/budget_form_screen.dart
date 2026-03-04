@@ -12,6 +12,7 @@ import 'package:share_plus/share_plus.dart';
 import 'package:speech_to_text/speech_to_text.dart' as stt;
 
 import '../../utils/speech_web.dart';
+import 'widgets/budget_form_sections.dart';
 import '../repairs/repair_detail_screen.dart';
 
 class BudgetFormScreen extends StatefulWidget {
@@ -1385,13 +1386,13 @@ class _BudgetFormScreenState extends State<BudgetFormScreen> {
         padding: const EdgeInsets.all(16),
         child: ListView(
           children: [
-            _Field(
+            BudgetFormField(
               label: 'T\u00edtulo *',
               controller: _title,
               helperText: 'Se copiar\u00e1 a Reparaciones al convertir',
             ),
             const SizedBox(height: 12),
-            _PickerField(
+            BudgetPickerField(
               label: 'Fecha *',
               value: _dateFmt.format(_date),
               hint: 'Seleccionar fecha',
@@ -1399,7 +1400,7 @@ class _BudgetFormScreenState extends State<BudgetFormScreen> {
               onTap: _pickDate,
             ),
             const SizedBox(height: 12),
-            _PickerField(
+            BudgetPickerField(
               label: 'Cliente *',
               value: _customerName,
               hint: 'Buscar y seleccionar cliente',
@@ -1408,7 +1409,7 @@ class _BudgetFormScreenState extends State<BudgetFormScreen> {
               disabled: widget.lockCustomer,
             ),
             const SizedBox(height: 12),
-            _PickerField(
+            BudgetPickerField(
               label: 'Veh\u00edculo *',
               value: _vehicleTitle,
               hint: _loadingVehicles
@@ -1419,7 +1420,7 @@ class _BudgetFormScreenState extends State<BudgetFormScreen> {
               disabled: widget.lockVehicle,
             ),
             const SizedBox(height: 12),
-            _DescFieldWithMic(
+            BudgetDescFieldWithMic(
               controller: _problem,
               listening: _isDictating(_problem),
               micEnabled: micEnabled,
@@ -1427,7 +1428,7 @@ class _BudgetFormScreenState extends State<BudgetFormScreen> {
               onClearTap: _clearProblem,
             ),
             const SizedBox(height: 12),
-            _Field(
+            BudgetFormField(
               label: 'Tiempo estimado (d\u00edas) *',
               controller: _days,
               keyboardType: TextInputType.number,
@@ -1554,21 +1555,21 @@ class _BudgetFormScreenState extends State<BudgetFormScreen> {
                         );
                       }),
                       const SizedBox(height: 4),
-                      _Field(
+                      BudgetFormField(
                         label: 'Total repuestos estimado (auto)',
                         controller: _parts,
                         keyboardType: TextInputType.number,
                         readOnly: true,
                       ),
                     ] else
-                      _MoneyField(
+                      BudgetMoneyField(
                         label: 'Monto de repuestos estimado',
                         controller: _parts,
                         helperText: 'Ej: 450.000',
                         format: _formatGsFromDigits,
                         onChanged: () => setState(() {}),
                       ),
-                    _MoneyField(
+                    BudgetMoneyField(
                       label: 'Monto de mano de obra estimado',
                       controller: _labor,
                       helperText: 'Ej: 300.000',
@@ -1612,7 +1613,7 @@ class _BudgetFormScreenState extends State<BudgetFormScreen> {
                     const SizedBox(width: 8),
                     const Text('Estado:'),
                     const SizedBox(width: 8),
-                    _StatusPill(text: _status),
+                    BudgetStatusPill(text: _status),
                   ],
                 ),
               ),
@@ -1669,219 +1670,6 @@ class _BudgetFormScreenState extends State<BudgetFormScreen> {
           ],
         ),
       ),
-    );
-  }
-}
-
-class _PickerField extends StatelessWidget {
-  final String label;
-  final String value;
-  final String hint;
-  final IconData icon;
-  final VoidCallback? onTap;
-  final bool disabled;
-
-  const _PickerField({
-    required this.label,
-    required this.value,
-    required this.hint,
-    required this.icon,
-    required this.onTap,
-    this.disabled = false,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final hasValue = value.trim().isNotEmpty;
-    final text = hasValue ? value.trim() : hint;
-    final active = onTap != null && !disabled;
-    final textStyle = hasValue
-        ? null
-        : Theme.of(
-            context,
-          ).textTheme.bodyMedium?.copyWith(color: Theme.of(context).hintColor);
-    return InkWell(
-      borderRadius: BorderRadius.circular(12),
-      onTap: active ? onTap : null,
-      child: InputDecorator(
-        decoration: InputDecoration(
-          labelText: label,
-          border: const OutlineInputBorder(),
-          suffixIcon: Icon(
-            icon,
-            color: active ? null : Theme.of(context).disabledColor,
-          ),
-        ),
-        child: Text(text, style: textStyle),
-      ),
-    );
-  }
-}
-
-class _Field extends StatelessWidget {
-  final String label;
-  final TextEditingController controller;
-  final TextInputType? keyboardType;
-  final String? helperText;
-  final List<TextInputFormatter>? inputFormatters;
-  final bool readOnly;
-
-  const _Field({
-    required this.label,
-    required this.controller,
-    this.keyboardType,
-    this.helperText,
-    this.inputFormatters,
-    this.readOnly = false,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return TextField(
-      controller: controller,
-      keyboardType: keyboardType,
-      readOnly: readOnly,
-      inputFormatters: inputFormatters,
-      decoration: InputDecoration(
-        labelText: label,
-        helperText: helperText,
-        border: const OutlineInputBorder(),
-      ),
-    );
-  }
-}
-
-class _MoneyField extends StatefulWidget {
-  final String label;
-  final TextEditingController controller;
-  final String? helperText;
-  final String Function(String rawDigits) format;
-  final VoidCallback onChanged;
-
-  const _MoneyField({
-    required this.label,
-    required this.controller,
-    required this.format,
-    required this.onChanged,
-    this.helperText,
-  });
-
-  @override
-  State<_MoneyField> createState() => _MoneyFieldState();
-}
-
-class _MoneyFieldState extends State<_MoneyField> {
-  bool _formatting = false;
-
-  void _handleChange(String v) {
-    if (_formatting) return;
-    final formatted = widget.format(v);
-    if (formatted == v) {
-      widget.onChanged();
-      return;
-    }
-    _formatting = true;
-    widget.controller.value = widget.controller.value.copyWith(
-      text: formatted,
-      selection: TextSelection.collapsed(offset: formatted.length),
-    );
-    _formatting = false;
-    widget.onChanged();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 12),
-      child: TextField(
-        controller: widget.controller,
-        keyboardType: TextInputType.number,
-        inputFormatters: [
-          FilteringTextInputFormatter.allow(RegExp(r'[0-9., ]')),
-        ],
-        onChanged: _handleChange,
-        decoration: InputDecoration(
-          labelText: widget.label,
-          helperText: widget.helperText,
-          border: const OutlineInputBorder(),
-        ),
-      ),
-    );
-  }
-}
-
-class _DescFieldWithMic extends StatelessWidget {
-  final TextEditingController controller;
-  final bool listening;
-  final bool micEnabled;
-  final VoidCallback onMicTap;
-  final VoidCallback onClearTap;
-
-  const _DescFieldWithMic({
-    required this.controller,
-    required this.listening,
-    required this.micEnabled,
-    required this.onMicTap,
-    required this.onClearTap,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        TextField(
-          controller: controller,
-          maxLines: 4,
-          decoration: InputDecoration(
-            labelText: 'Descripci\u00f3n del problema *',
-            helperText: 'Pod\u00e9s escribir o dictar por voz',
-            border: const OutlineInputBorder(),
-            suffixIcon: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                IconButton(
-                  tooltip: 'Borrar r\u00e1pido',
-                  onPressed: onClearTap,
-                  icon: const Icon(Icons.backspace_outlined),
-                ),
-                IconButton(
-                  tooltip: listening ? 'Detener dictado' : 'Dictar por voz',
-                  onPressed: micEnabled ? onMicTap : null,
-                  icon: Icon(
-                    listening ? Icons.mic : Icons.mic_none,
-                    color: listening ? Colors.redAccent : null,
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ),
-        if (listening) ...[
-          const SizedBox(height: 6),
-          const LinearProgressIndicator(minHeight: 2),
-          const SizedBox(height: 6),
-          const Text('Escuchando...'),
-        ],
-      ],
-    );
-  }
-}
-
-class _StatusPill extends StatelessWidget {
-  final String text;
-  const _StatusPill({required this.text});
-
-  @override
-  Widget build(BuildContext context) {
-    final t = text.trim().isEmpty ? 'Pendiente' : text.trim();
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-      decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(999),
-        border: Border.all(color: Theme.of(context).colorScheme.outlineVariant),
-      ),
-      child: Text(t, style: Theme.of(context).textTheme.labelSmall),
     );
   }
 }
