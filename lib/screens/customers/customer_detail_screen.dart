@@ -2,6 +2,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
+import '../../features/customers/data/models/customer_model.dart';
 import 'customer_form_screen.dart';
 import 'customer_vehicles_screen.dart';
 
@@ -10,18 +11,27 @@ class CustomerDetailScreen extends StatelessWidget {
 
   const CustomerDetailScreen({super.key, required this.customerId});
 
-  DocumentReference<Map<String, dynamic>> _customerRef() {
+  DocumentReference<CustomerModel> _customerRef() {
     final uid = FirebaseAuth.instance.currentUser!.uid;
-    return FirebaseFirestore.instance
-        .collection('users')
-        .doc(uid)
-        .collection('customers')
-        .doc(customerId);
+    return CustomerModel.collectionForUser(
+      FirebaseFirestore.instance,
+      uid,
+    ).doc(customerId);
+  }
+
+  Map<String, dynamic> _toInitial(CustomerModel customer) {
+    return {
+      'name': customer.name,
+      'phone': customer.phone,
+      'address': customer.address,
+      'ruc': customer.ruc,
+      'notes': customer.notes,
+    };
   }
 
   @override
   Widget build(BuildContext context) {
-    return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+    return StreamBuilder<DocumentSnapshot<CustomerModel>>(
       stream: _customerRef().snapshots(),
       builder: (context, snapshot) {
         if (snapshot.hasError) {
@@ -37,19 +47,19 @@ class CustomerDetailScreen extends StatelessWidget {
           );
         }
 
-        final data = snapshot.data?.data();
-        if (data == null) {
+        final customer = snapshot.data?.data();
+        if (customer == null) {
           return Scaffold(
             appBar: AppBar(title: const Text('Cliente')),
             body: const Center(child: Text('Cliente no encontrado')),
           );
         }
 
-        final name = (data['name'] ?? '').toString();
-        final phone = (data['phone'] ?? '').toString();
-        final ruc = (data['ruc'] ?? '').toString();
-        final address = (data['address'] ?? '').toString();
-        final notes = (data['notes'] ?? '').toString();
+        final name = customer.name;
+        final phone = customer.phone;
+        final ruc = customer.ruc;
+        final address = customer.address;
+        final notes = customer.notes;
 
         return Scaffold(
           appBar: AppBar(
@@ -64,7 +74,7 @@ class CustomerDetailScreen extends StatelessWidget {
                     MaterialPageRoute(
                       builder: (_) => CustomerFormScreen(
                         customerId: customerId,
-                        initial: data,
+                        initial: _toInitial(customer),
                       ),
                     ),
                   );
@@ -146,4 +156,3 @@ class _InfoRow extends StatelessWidget {
     );
   }
 }
-

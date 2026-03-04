@@ -2,6 +2,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
+import '../../features/customers/data/models/customer_model.dart';
 import 'customer_detail_screen.dart';
 import 'customer_form_screen.dart';
 
@@ -18,11 +19,8 @@ class _CustomersScreenState extends State<CustomersScreen> {
 
   String get _uid => FirebaseAuth.instance.currentUser!.uid;
 
-  CollectionReference<Map<String, dynamic>> get _col => FirebaseFirestore
-      .instance
-      .collection('users')
-      .doc(_uid)
-      .collection('customers');
+  CollectionReference<CustomerModel> get _col =>
+      CustomerModel.collectionForUser(FirebaseFirestore.instance, _uid);
 
   @override
   void dispose() {
@@ -30,11 +28,24 @@ class _CustomersScreenState extends State<CustomersScreen> {
     super.dispose();
   }
 
-  void _openForm({String? id, Map<String, dynamic>? data}) async {
+  Map<String, dynamic> _toInitial(CustomerModel customer) {
+    return {
+      'name': customer.name,
+      'phone': customer.phone,
+      'address': customer.address,
+      'ruc': customer.ruc,
+      'notes': customer.notes,
+    };
+  }
+
+  void _openForm({String? id, CustomerModel? data}) async {
     await Navigator.push(
       context,
       MaterialPageRoute(
-        builder: (_) => CustomerFormScreen(customerId: id, initial: data),
+        builder: (_) => CustomerFormScreen(
+          customerId: id,
+          initial: data == null ? null : _toInitial(data),
+        ),
       ),
     );
   }
@@ -76,11 +87,11 @@ class _CustomersScreenState extends State<CustomersScreen> {
     ).showSnackBar(const SnackBar(content: Text('Cliente eliminado ✅')));
   }
 
-  bool _matches(Map<String, dynamic> d) {
+  bool _matches(CustomerModel customer) {
     if (_q.trim().isEmpty) return true;
-    final name = (d['name'] ?? '').toString().toLowerCase();
-    final phone = (d['phone'] ?? '').toString().toLowerCase();
-    final ruc = (d['ruc'] ?? '').toString().toLowerCase();
+    final name = customer.name.toLowerCase();
+    final phone = customer.phone.toLowerCase();
+    final ruc = customer.ruc.toLowerCase();
     return name.contains(_q) || phone.contains(_q) || ruc.contains(_q);
   }
 
@@ -116,7 +127,7 @@ class _CustomersScreenState extends State<CustomersScreen> {
             ),
             const SizedBox(height: 12),
             Expanded(
-              child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+              child: StreamBuilder<QuerySnapshot<CustomerModel>>(
                 stream: _col.orderBy('name').snapshots(),
                 builder: (context, snap) {
                   if (snap.connectionState == ConnectionState.waiting) {
@@ -142,11 +153,11 @@ class _CustomersScreenState extends State<CustomersScreen> {
                     separatorBuilder: (_, _) => const SizedBox(height: 10),
                     itemBuilder: (_, i) {
                       final doc = filtered[i];
-                      final d = doc.data();
+                      final customer = doc.data();
 
-                      final name = (d['name'] ?? '').toString();
-                      final phone = (d['phone'] ?? '').toString();
-                      final ruc = (d['ruc'] ?? '').toString();
+                      final name = customer.name;
+                      final phone = customer.phone;
+                      final ruc = customer.ruc;
 
                       return Card(
                         elevation: 2,
@@ -172,7 +183,7 @@ class _CustomersScreenState extends State<CustomersScreen> {
                               if (v == 'view') {
                                 _openDetail(doc.id);
                               } else if (v == 'edit') {
-                                _openForm(id: doc.id, data: d);
+                                _openForm(id: doc.id, data: customer);
                               } else if (v == 'del') {
                                 _delete(doc.id);
                               }
