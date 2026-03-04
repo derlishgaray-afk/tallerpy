@@ -15,6 +15,7 @@ import '/utils/speech_web.dart';
 
 // Mobile speech (opcional)
 import 'package:speech_to_text/speech_to_text.dart' as stt;
+import 'widgets/repair_form_sections.dart';
 
 class RepairFormScreen extends StatefulWidget {
   final String customerId;
@@ -755,9 +756,7 @@ class _RepairFormScreenState extends State<RepairFormScreen> {
       final file = 'reparacion_${safeVehicle}_${safeTitle}_$fileDate.pdf';
       await SharePlus.instance.share(
         ShareParams(
-          files: [
-            XFile.fromData(bytes, mimeType: 'application/pdf'),
-          ],
+          files: [XFile.fromData(bytes, mimeType: 'application/pdf')],
           fileNameOverrides: [file],
           title: file,
           subject: file,
@@ -843,6 +842,64 @@ class _RepairFormScreenState extends State<RepairFormScreen> {
     }
   }
 
+  Widget _buildStatusField() {
+    return DropdownButtonFormField<String>(
+      initialValue: _status,
+      decoration: const InputDecoration(
+        labelText: 'Estado',
+        border: OutlineInputBorder(),
+      ),
+      items: const [
+        DropdownMenuItem(value: 'Abierta', child: Text('Abierta')),
+        DropdownMenuItem(value: 'En proceso', child: Text('En proceso')),
+        DropdownMenuItem(value: 'Terminada', child: Text('Terminada')),
+        DropdownMenuItem(value: 'Entregada', child: Text('Entregada')),
+        DropdownMenuItem(value: 'Cancelada', child: Text('Cancelada')),
+      ],
+      onChanged: (value) => setState(() => _status = value ?? 'Abierta'),
+    );
+  }
+
+  Widget _buildCostsSection() {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(14),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('Costos', style: Theme.of(context).textTheme.titleMedium),
+            const SizedBox(height: 12),
+            RepairMoneyField(
+              label: 'Mano de obra',
+              controller: _labor,
+              helperText: 'Ej: 150.000',
+              format: _formatGsFromDigits,
+              onChanged: () => setState(() {}),
+            ),
+            RepairMoneyField(
+              label: 'Repuestos',
+              controller: _parts,
+              helperText: 'Ej: 320.000',
+              format: _formatGsFromDigits,
+              onChanged: () => setState(() {}),
+            ),
+            const SizedBox(height: 6),
+            Row(
+              children: [
+                const Icon(Icons.calculate_outlined, size: 18),
+                const SizedBox(width: 8),
+                Text(
+                  'Total: $_totalText',
+                  style: const TextStyle(fontWeight: FontWeight.w800),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final editing = widget.repairId != null;
@@ -890,30 +947,13 @@ class _RepairFormScreenState extends State<RepairFormScreen> {
         padding: const EdgeInsets.all(16),
         child: ListView(
           children: [
-            _Field(label: 'Título *', controller: _title),
+            RepairTextField(label: 'Título *', controller: _title),
             const SizedBox(height: 12),
 
-            DropdownButtonFormField<String>(
-              initialValue: _status,
-              decoration: const InputDecoration(
-                labelText: 'Estado',
-                border: OutlineInputBorder(),
-              ),
-              items: const [
-                DropdownMenuItem(value: 'Abierta', child: Text('Abierta')),
-                DropdownMenuItem(
-                  value: 'En proceso',
-                  child: Text('En proceso'),
-                ),
-                DropdownMenuItem(value: 'Terminada', child: Text('Terminada')),
-                DropdownMenuItem(value: 'Entregada', child: Text('Entregada')),
-                DropdownMenuItem(value: 'Cancelada', child: Text('Cancelada')),
-              ],
-              onChanged: (v) => setState(() => _status = v ?? 'Abierta'),
-            ),
+            _buildStatusField(),
 
             const SizedBox(height: 12),
-            _Field(
+            RepairTextField(
               label: 'Km',
               controller: _km,
               keyboardType: TextInputType.number,
@@ -924,60 +964,20 @@ class _RepairFormScreenState extends State<RepairFormScreen> {
             ),
 
             const SizedBox(height: 12),
-            _DescFieldWithMic(
+            RepairDescFieldWithMic(
               controller: _desc,
               listening: _listening,
               micEnabled: micEnabled,
-              mode: _mode,
+              isAddMode: _mode == DictationMode.add,
               onMicTap: _toggleMic,
               onClearTap: _quickClearDesc,
-              onModeChanged: _setMode,
+              onModeChanged: (isAdd) {
+                _setMode(isAdd ? DictationMode.add : DictationMode.replace);
+              },
             ),
 
             const SizedBox(height: 12),
-            Card(
-              child: Padding(
-                padding: const EdgeInsets.all(14),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      'Costos',
-                      style: Theme.of(context).textTheme.titleMedium,
-                    ),
-                    const SizedBox(height: 12),
-
-                    _MoneyField(
-                      label: 'Mano de obra',
-                      controller: _labor,
-                      helperText: 'Ej: 150.000',
-                      format: _formatGsFromDigits,
-                      onChanged: () => setState(() {}),
-                    ),
-
-                    _MoneyField(
-                      label: 'Repuestos',
-                      controller: _parts,
-                      helperText: 'Ej: 320.000',
-                      format: _formatGsFromDigits,
-                      onChanged: () => setState(() {}),
-                    ),
-
-                    const SizedBox(height: 6),
-                    Row(
-                      children: [
-                        const Icon(Icons.calculate_outlined, size: 18),
-                        const SizedBox(width: 8),
-                        Text(
-                          'Total: $_totalText',
-                          style: const TextStyle(fontWeight: FontWeight.w800),
-                        ),
-                      ],
-                    ),
-                  ],
-                ),
-              ),
-            ),
+            _buildCostsSection(),
 
             const SizedBox(height: 16),
             SizedBox(
@@ -996,253 +996,6 @@ class _RepairFormScreenState extends State<RepairFormScreen> {
           ],
         ),
       ),
-    );
-  }
-}
-
-// ===== Widgets auxiliares =====
-
-class _Field extends StatelessWidget {
-  final String label;
-  final TextEditingController controller;
-  final TextInputType? keyboardType;
-  final String? helperText;
-  final List<TextInputFormatter>? inputFormatters;
-
-  const _Field({
-    required this.label,
-    required this.controller,
-    this.keyboardType,
-    this.helperText,
-    this.inputFormatters,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return TextField(
-      controller: controller,
-      keyboardType: keyboardType,
-      maxLines: 1,
-      inputFormatters: inputFormatters,
-      decoration: InputDecoration(
-        labelText: label,
-        helperText: helperText,
-        border: const OutlineInputBorder(),
-      ),
-    );
-  }
-}
-
-class _MoneyField extends StatefulWidget {
-  final String label;
-  final TextEditingController controller;
-  final String? helperText;
-  final String Function(String rawDigits) format;
-  final VoidCallback onChanged;
-
-  const _MoneyField({
-    required this.label,
-    required this.controller,
-    required this.format,
-    required this.onChanged,
-    this.helperText,
-  });
-
-  @override
-  State<_MoneyField> createState() => _MoneyFieldState();
-}
-
-class _MoneyFieldState extends State<_MoneyField> {
-  bool _formatting = false;
-
-  void _handleChange(String v) {
-    if (_formatting) return;
-
-    final formatted = widget.format(v);
-    if (formatted == v) {
-      widget.onChanged();
-      return;
-    }
-
-    _formatting = true;
-    widget.controller.value = widget.controller.value.copyWith(
-      text: formatted,
-      selection: TextSelection.collapsed(offset: formatted.length),
-    );
-    _formatting = false;
-
-    widget.onChanged();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 12),
-      child: TextField(
-        controller: widget.controller,
-        keyboardType: TextInputType.number,
-        inputFormatters: [
-          FilteringTextInputFormatter.allow(RegExp(r'[0-9., ]')),
-        ],
-        onChanged: _handleChange,
-        decoration: InputDecoration(
-          labelText: widget.label,
-          helperText: widget.helperText,
-          border: const OutlineInputBorder(),
-        ),
-      ),
-    );
-  }
-}
-
-class _DescFieldWithMic extends StatefulWidget {
-  final TextEditingController controller;
-  final bool listening;
-  final bool micEnabled;
-  final DictationMode mode;
-
-  final VoidCallback onMicTap;
-  final VoidCallback onClearTap;
-  final void Function(DictationMode mode) onModeChanged;
-
-  const _DescFieldWithMic({
-    required this.controller,
-    required this.listening,
-    required this.micEnabled,
-    required this.mode,
-    required this.onMicTap,
-    required this.onClearTap,
-    required this.onModeChanged,
-  });
-
-  @override
-  State<_DescFieldWithMic> createState() => _DescFieldWithMicState();
-}
-
-class _DescFieldWithMicState extends State<_DescFieldWithMic>
-    with SingleTickerProviderStateMixin {
-  late final AnimationController _pulse;
-  late final Animation<double> _scale;
-  late final Animation<double> _opacity;
-
-  @override
-  void initState() {
-    super.initState();
-    _pulse = AnimationController(
-      vsync: this,
-      duration: const Duration(milliseconds: 900),
-    );
-    _scale = Tween<double>(
-      begin: 0.85,
-      end: 1.2,
-    ).animate(CurvedAnimation(parent: _pulse, curve: Curves.easeInOut));
-    _opacity = Tween<double>(
-      begin: 0.4,
-      end: 1.0,
-    ).animate(CurvedAnimation(parent: _pulse, curve: Curves.easeInOut));
-    if (widget.listening) {
-      _pulse.repeat(reverse: true);
-    }
-  }
-
-  @override
-  void didUpdateWidget(covariant _DescFieldWithMic oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (widget.listening && !_pulse.isAnimating) {
-      _pulse.repeat(reverse: true);
-    } else if (!widget.listening && _pulse.isAnimating) {
-      _pulse.stop();
-      _pulse.value = 0.0;
-    }
-  }
-
-  @override
-  void dispose() {
-    _pulse.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final modeText = widget.mode == DictationMode.add
-        ? 'Agregar'
-        : 'Reemplazar';
-
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        TextField(
-          controller: widget.controller,
-          maxLines: 4,
-          decoration: InputDecoration(
-            labelText: 'Descripción',
-            border: const OutlineInputBorder(),
-            helperText: 'Dictado: $modeText',
-            suffixIcon: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                IconButton(
-                  tooltip: 'Borrar rápido',
-                  onPressed: widget.onClearTap,
-                  icon: const Icon(Icons.backspace_outlined),
-                ),
-                IconButton(
-                  tooltip: widget.listening
-                      ? 'Detener dictado'
-                      : 'Dictar por voz',
-                  onPressed: widget.micEnabled ? widget.onMicTap : null,
-                  icon: Icon(
-                    widget.listening ? Icons.mic : Icons.mic_none,
-                    color: widget.listening ? Colors.redAccent : null,
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ),
-        if (widget.listening) ...[
-          const SizedBox(height: 6),
-          Row(
-            children: [
-              FadeTransition(
-                opacity: _opacity,
-                child: ScaleTransition(
-                  scale: _scale,
-                  child: Container(
-                    width: 8,
-                    height: 8,
-                    decoration: const BoxDecoration(
-                      color: Colors.redAccent,
-                      shape: BoxShape.circle,
-                    ),
-                  ),
-                ),
-              ),
-              const SizedBox(width: 8),
-              const Text('Escuchando...'),
-            ],
-          ),
-          const SizedBox(height: 6),
-          const LinearProgressIndicator(minHeight: 2),
-        ],
-        const SizedBox(height: 10),
-        SegmentedButton<DictationMode>(
-          segments: const [
-            ButtonSegment(
-              value: DictationMode.add,
-              label: Text('Agregar'),
-              icon: Icon(Icons.add),
-            ),
-            ButtonSegment(
-              value: DictationMode.replace,
-              label: Text('Reemplazar'),
-              icon: Icon(Icons.find_replace),
-            ),
-          ],
-          selected: {widget.mode},
-          onSelectionChanged: (s) => widget.onModeChanged(s.first),
-        ),
-      ],
     );
   }
 }
