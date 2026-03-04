@@ -1,8 +1,11 @@
-import 'package:cloud_firestore/cloud_firestore.dart';
+import 'dart:async';
+
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 
+import '../../features/repairs/data/models/repair_model.dart';
+import '../../features/repairs/data/repositories/repairs_repository.dart';
 import 'repair_detail_screen.dart';
 import 'repair_form_screen.dart';
 
@@ -25,25 +28,22 @@ class RepairsScreen extends StatefulWidget {
 }
 
 class _RepairsScreenState extends State<RepairsScreen> {
-  final _search = TextEditingController();
-  String _q = '';
+  static const int _pageSize = 25;
 
-  // ✅ filtro por estado
+  final _search = TextEditingController();
+  final _repo = RepairsRepository();
+  final List<RepairModel> _docs = [];
+
+  String _q = '';
   String _statusFilter = 'Todas';
+
+  bool _loadingFirstPage = true;
+  bool _loadingNextPage = false;
+  bool _hasMore = true;
+  Object? _loadError;
 
   String get _uid => FirebaseAuth.instance.currentUser!.uid;
 
-  CollectionReference<Map<String, dynamic>> get _repairsCol => FirebaseFirestore
-      .instance
-      .collection('users')
-      .doc(_uid)
-      .collection('customers')
-      .doc(widget.customerId)
-      .collection('vehicles')
-      .doc(widget.vehicleId)
-      .collection('repairs');
-
-  // ===== Formatters (Paraguay) =====
   static final NumberFormat _gsFmt = NumberFormat.decimalPattern('es_PY');
   static final DateFormat _dateFmt = DateFormat('dd/MM/yyyy');
 
@@ -57,38 +57,73 @@ class _RepairsScreenState extends State<RepairsScreen> {
   ];
 
   @override
+  void initState() {
+    super.initState();
+    unawaited(_resetAndLoad());
+  }
+
+  @override
   void dispose() {
     _search.dispose();
     super.dispose();
   }
 
-  void _openNew() {
-    Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (_) => RepairFormScreen(
-          customerId: widget.customerId,
-          customerName: widget.customerName,
-          vehicleId: widget.vehicleId,
-          vehicleTitle: widget.vehicleTitle,
-        ),
-      ),
-    );
+  Future<void> _resetAndLoad() async {
+    if (!mounted) return;
+    setState(() {
+      _docs.clear();
+      _hasMore = true;
+      _loadError = null;
+      _loadingFirstPage = true;
+      _loadingNextPage = false;
+    });
+    await _loadNextPage(isFirstPage: true);
   }
 
-  void _openDetail(String repairId) {
-    Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (_) => RepairDetailScreen(
-          customerId: widget.customerId,
-          vehicleId: widget.vehicleId,
-          vehicleTitle: widget.vehicleTitle,
-          repairId: repairId,
-          customerName: widget.customerName,
-        ),
-      ),
-    );
+  Future<void> _loadNextPage({bool isFirstPage = false}) async {
+    if (_loadingNextPage) return;
+    if (!isFirstPage && !_hasMore) return;
+
+    if (!mounted) return;
+    setState(() {
+      _loadingNextPage = true;
+      if (isFirstPage) _loadingFirstPage = true;
+      _loadError = null;
+    });
+
+    try {
+      final page = isFirstPage
+          ? await _repo.fetchFirstPage(
+              uid: _uid,
+              customerId: widget.customerId,
+              vehicleId: widget.vehicleId,
+              statusFilter: _statusFilter,
+              limit: _pageSize,
+            )
+          : await _repo.fetchNextPage(
+              uid: _uid,
+              customerId: widget.customerId,
+              vehicleId: widget.vehicleId,
+              statusFilter: _statusFilter,
+              limit: _pageSize,
+            );
+      if (!mounted) return;
+
+      setState(() {
+        if (isFirstPage) _docs.clear();
+        _docs.addAll(page.items);
+        _hasMore = page.hasMore;
+        _loadingFirstPage = false;
+        _loadingNextPage = false;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _loadError = e;
+        _loadingFirstPage = false;
+        _loadingNextPage = false;
+      });
+    }
   }
 
   String _statusLabel(String raw) {
@@ -96,32 +131,19 @@ class _RepairsScreenState extends State<RepairsScreen> {
     return s.isEmpty ? 'Abierta' : s;
   }
 
-  bool _matchesSearch(Map<String, dynamic> d) {
+  bool _matchesSearch(RepairModel repair) {
     if (_q.trim().isEmpty) return true;
     final q = _q.trim().toLowerCase();
 
-    final title = (d['title'] ?? '').toString().toLowerCase();
-    final desc = (d['description'] ?? '').toString().toLowerCase();
-    final status = (d['status'] ?? '').toString().toLowerCase();
-    final km = (d['km'] ?? '').toString().toLowerCase();
+    final title = repair.title.toLowerCase();
+    final desc = repair.description.toLowerCase();
+    final status = repair.status.toLowerCase();
+    final km = repair.km.toLowerCase();
 
     return title.contains(q) ||
         desc.contains(q) ||
         status.contains(q) ||
         km.contains(q);
-  }
-
-  bool _matchesStatus(Map<String, dynamic> d) {
-    if (_statusFilter == 'Todas') return true;
-    final s = _statusLabel((d['status'] ?? '').toString());
-    return s == _statusFilter;
-  }
-
-  // Para el resumen/suma
-  num _num(dynamic v) {
-    if (v == null) return 0;
-    if (v is num) return v;
-    return num.tryParse(v.toString()) ?? 0;
   }
 
   String _gs(num n) => _gsFmt.format(n.round());
@@ -135,9 +157,49 @@ class _RepairsScreenState extends State<RepairsScreen> {
     return _gsFmt.format(n);
   }
 
-  String _dateText(dynamic ts) {
-    if (ts is Timestamp) return _dateFmt.format(ts.toDate());
-    return '';
+  String _dateText(DateTime? value) {
+    if (value == null) return '';
+    return _dateFmt.format(value);
+  }
+
+  String _errorText(Object? error) {
+    if (error is FirebaseException && error.code == 'failed-precondition') {
+      return 'La consulta requiere un indice de Firestore. Crea el indice sugerido en consola.';
+    }
+    return 'Error: $error';
+  }
+
+  Future<void> _openNew() async {
+    await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => RepairFormScreen(
+          customerId: widget.customerId,
+          customerName: widget.customerName,
+          vehicleId: widget.vehicleId,
+          vehicleTitle: widget.vehicleTitle,
+        ),
+      ),
+    );
+    if (!mounted) return;
+    await _resetAndLoad();
+  }
+
+  Future<void> _openDetail(String repairId) async {
+    await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => RepairDetailScreen(
+          customerId: widget.customerId,
+          vehicleId: widget.vehicleId,
+          vehicleTitle: widget.vehicleTitle,
+          repairId: repairId,
+          customerName: widget.customerName,
+        ),
+      ),
+    );
+    if (!mounted) return;
+    await _resetAndLoad();
   }
 
   @override
@@ -145,6 +207,34 @@ class _RepairsScreenState extends State<RepairsScreen> {
     final cust = widget.customerName.trim().isEmpty
         ? 'Cliente'
         : widget.customerName.trim();
+
+    final filtered = _docs.where(_matchesSearch).toList();
+
+    num sumTotal = 0;
+    for (final repair in filtered) {
+      sumTotal += repair.total;
+    }
+
+    final summary = Card(
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Row(
+          children: [
+            const Icon(Icons.summarize_outlined, size: 18),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                'Mostrando ${filtered.length} / ${_docs.length} cargados - Total: ${_gs(sumTotal)}',
+                style: Theme.of(
+                  context,
+                ).textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w700),
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
 
     return Scaffold(
       appBar: AppBar(
@@ -176,7 +266,7 @@ class _RepairsScreenState extends State<RepairsScreen> {
             TextField(
               controller: _search,
               decoration: InputDecoration(
-                labelText: 'Buscar (título, estado, km)',
+                labelText: 'Buscar (titulo, estado, km)',
                 prefixIcon: const Icon(Icons.search),
                 border: const OutlineInputBorder(),
                 suffixIcon: _search.text.isEmpty
@@ -191,10 +281,7 @@ class _RepairsScreenState extends State<RepairsScreen> {
               ),
               onChanged: (v) => setState(() => _q = v),
             ),
-
             const SizedBox(height: 10),
-
-            // ✅ Chips de filtro
             SizedBox(
               height: 42,
               child: ListView.separated(
@@ -203,140 +290,138 @@ class _RepairsScreenState extends State<RepairsScreen> {
                 separatorBuilder: (_, index) => const SizedBox(width: 8),
                 itemBuilder: (_, i) {
                   final s = _statusOptions[i];
-                  final selected = s == _statusFilter;
                   return FilterChip(
                     label: Text(s),
-                    selected: selected,
-                    onSelected: (_) => setState(() => _statusFilter = s),
-                  );
-                },
-              ),
-            ),
-
-            const SizedBox(height: 10),
-
-            Expanded(
-              child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-                stream: _repairsCol
-                    .orderBy('updatedAt', descending: true)
-                    .snapshots(),
-                builder: (context, snap) {
-                  if (snap.hasError) {
-                    return Center(child: Text('Error: ${snap.error}'));
-                  }
-                  if (snap.connectionState == ConnectionState.waiting) {
-                    return const Center(child: CircularProgressIndicator());
-                  }
-
-                  final docs = snap.data?.docs ?? [];
-
-                  // 🔎 filtrado
-                  final filtered = docs
-                      .where((d) => _matchesSearch(d.data()))
-                      .where((d) => _matchesStatus(d.data()))
-                      .toList();
-
-                  // ✅ resumen (sobre el filtrado)
-                  num sumTotal = 0;
-                  for (final doc in filtered) {
-                    sumTotal += _num(doc.data()['total']);
-                  }
-
-                  // Resumen arriba de la lista
-                  final summary = Card(
-                    child: Padding(
-                      padding: const EdgeInsets.all(12),
-                      child: Row(
-                        children: [
-                          const Icon(Icons.summarize_outlined, size: 18),
-                          const SizedBox(width: 8),
-                          Expanded(
-                            child: Text(
-                              'Mostrando ${filtered.length} / ${docs.length}   •   Total: ${_gs(sumTotal)}',
-                              style: Theme.of(context).textTheme.bodyMedium
-                                  ?.copyWith(fontWeight: FontWeight.w700),
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  );
-
-                  if (filtered.isEmpty) {
-                    return ListView(
-                      children: [
-                        summary,
-                        const SizedBox(height: 12),
-                        const Center(
-                          child: Padding(
-                            padding: EdgeInsets.all(24),
-                            child: Column(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                Icon(Icons.build_circle_outlined, size: 56),
-                                SizedBox(height: 12),
-                                Text(
-                                  'No hay reparaciones con ese filtro/búsqueda.',
-                                ),
-                                SizedBox(height: 6),
-                                Text(
-                                  'Probá cambiar el estado o limpiar la búsqueda.',
-                                ),
-                              ],
-                            ),
-                          ),
-                        ),
-                      ],
-                    );
-                  }
-
-                  return ListView.separated(
-                    itemCount: filtered.length + 1, // +1 para el resumen
-                    separatorBuilder: (_, index) => const SizedBox(height: 10),
-                    itemBuilder: (_, i) {
-                      if (i == 0) return summary;
-
-                      final doc = filtered[i - 1];
-                      final d = doc.data();
-
-                      final title = (d['title'] ?? '').toString().trim();
-                      final status = _statusLabel(
-                        (d['status'] ?? '').toString(),
-                      );
-
-                      final km = _kmText((d['km'] ?? '').toString());
-                      final total = _gs(_num(d['total']));
-                      final createdAt = _dateText(d['createdAt']);
-
-                      final subtitleParts = <String>[
-                        if (km.isNotEmpty) 'Km: $km',
-                        if (createdAt.isNotEmpty) 'Fecha: $createdAt',
-                        if (total.isNotEmpty) 'Total: $total',
-                      ];
-
-                      return Card(
-                        elevation: 2,
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(14),
-                        ),
-                        child: ListTile(
-                          leading: const CircleAvatar(child: Icon(Icons.build)),
-                          title: Text(
-                            title.isEmpty ? '(Sin título)' : title,
-                            style: const TextStyle(fontWeight: FontWeight.w600),
-                          ),
-                          subtitle: subtitleParts.isEmpty
-                              ? null
-                              : Text(subtitleParts.join('   •   ')),
-                          trailing: _StatusPill(status: status),
-                          onTap: () => _openDetail(doc.id),
-                        ),
-                      );
+                    selected: s == _statusFilter,
+                    onSelected: (_) {
+                      if (_statusFilter == s) return;
+                      setState(() => _statusFilter = s);
+                      unawaited(_resetAndLoad());
                     },
                   );
                 },
               ),
+            ),
+            const SizedBox(height: 10),
+            Expanded(
+              child: _loadingFirstPage && _docs.isEmpty
+                  ? const Center(child: CircularProgressIndicator())
+                  : RefreshIndicator(
+                      onRefresh: _resetAndLoad,
+                      child: ListView(
+                        children: [
+                          summary,
+                          if (_loadError != null && _docs.isEmpty) ...[
+                            const SizedBox(height: 12),
+                            Card(
+                              child: Padding(
+                                padding: const EdgeInsets.all(12),
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(_errorText(_loadError)),
+                                    const SizedBox(height: 10),
+                                    FilledButton(
+                                      onPressed: () =>
+                                          _loadNextPage(isFirstPage: true),
+                                      child: const Text('Reintentar'),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ),
+                          ] else if (filtered.isEmpty) ...[
+                            const SizedBox(height: 12),
+                            const Center(
+                              child: Padding(
+                                padding: EdgeInsets.all(24),
+                                child: Column(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Icon(Icons.build_circle_outlined, size: 56),
+                                    SizedBox(height: 12),
+                                    Text(
+                                      'No hay reparaciones con ese filtro o busqueda.',
+                                    ),
+                                    SizedBox(height: 6),
+                                    Text(
+                                      'Prueba con otro estado o limpia la busqueda.',
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ),
+                          ] else ...[
+                            const SizedBox(height: 10),
+                            ...filtered.map((repair) {
+                              final title = repair.title.trim();
+                              final status = _statusLabel(repair.status);
+                              final km = _kmText(repair.km);
+                              final total = _gs(repair.total);
+                              final createdAt = _dateText(repair.createdAt);
+
+                              final subtitleParts = <String>[
+                                if (km.isNotEmpty) 'Km: $km',
+                                if (createdAt.isNotEmpty) 'Fecha: $createdAt',
+                                if (total.isNotEmpty) 'Total: $total',
+                              ];
+
+                              return Padding(
+                                padding: const EdgeInsets.only(bottom: 10),
+                                child: Card(
+                                  elevation: 2,
+                                  shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(14),
+                                  ),
+                                  child: ListTile(
+                                    leading: const CircleAvatar(
+                                      child: Icon(Icons.build),
+                                    ),
+                                    title: Text(
+                                      title.isEmpty ? '(Sin titulo)' : title,
+                                      style: const TextStyle(
+                                        fontWeight: FontWeight.w600,
+                                      ),
+                                    ),
+                                    subtitle: subtitleParts.isEmpty
+                                        ? null
+                                        : Text(subtitleParts.join('   •   ')),
+                                    trailing: _StatusPill(status: status),
+                                    onTap: () => _openDetail(repair.id),
+                                  ),
+                                ),
+                              );
+                            }),
+                          ],
+                          if (_loadError != null && _docs.isNotEmpty) ...[
+                            Card(
+                              child: ListTile(
+                                title: Text(_errorText(_loadError)),
+                                trailing: TextButton(
+                                  onPressed: _loadNextPage,
+                                  child: const Text('Reintentar'),
+                                ),
+                              ),
+                            ),
+                          ],
+                          if (_loadingNextPage)
+                            const Padding(
+                              padding: EdgeInsets.all(16),
+                              child: Center(child: CircularProgressIndicator()),
+                            ),
+                          if (_hasMore && !_loadingNextPage)
+                            Padding(
+                              padding: const EdgeInsets.symmetric(vertical: 8),
+                              child: Center(
+                                child: OutlinedButton(
+                                  onPressed: _loadNextPage,
+                                  child: const Text('Cargar mas'),
+                                ),
+                              ),
+                            ),
+                        ],
+                      ),
+                    ),
             ),
           ],
         ),
