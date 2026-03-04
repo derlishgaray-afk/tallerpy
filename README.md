@@ -1,16 +1,42 @@
 # taller_mecanico
 
-A new Flutter project.
+Flutter app for workshop management (customers, vehicles, budgets, and repairs).
 
-## Getting Started
+## Firestore setup
 
-This project is a starting point for a Flutter application.
+This repo now version-controls both Firestore rules and composite indexes:
 
-A few resources to get you started if this is your first Flutter project:
+- Rules: `firestore.rules`
+- Indexes: `firestore.indexes.json`
+- Index matrix: `firestore.indexes.md`
+- Firebase config: `firebase.json`
 
-- [Lab: Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
-- [Cookbook: Useful Flutter samples](https://docs.flutter.dev/cookbook)
+## Deploy rules and indexes
 
-For help getting started with Flutter development, view the
-[online documentation](https://docs.flutter.dev/), which offers tutorials,
-samples, guidance on mobile development, and a full API reference.
+From the project root:
+
+```bash
+firebase deploy --only firestore:rules,firestore:indexes
+```
+
+Or deploy only indexes:
+
+```bash
+firebase deploy --only firestore:indexes
+```
+
+## Indexes included
+
+The current indexes cover:
+
+- `users/{uid}/budgets` queries with:
+  - `orderBy(updatedAt desc)`
+  - optional filters by `status`, `customerId`, `vehicleId`
+  - combined filters (`customerId + status`, `vehicleId + status`, `customerId + vehicleId`, and `customerId + vehicleId + status`)
+- `users/{uid}/customers/{customerId}/vehicles/{vehicleId}/repairs` queries with:
+  - `where(status == ...) + orderBy(updatedAt desc)`
+
+These indexes support the paginated list screens introduced in:
+
+- `lib/screens/budgets/budgets_screen.dart`
+- `lib/screens/repairs/repairs_screen.dart`
