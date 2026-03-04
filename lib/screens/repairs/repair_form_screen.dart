@@ -1,6 +1,5 @@
 import 'dart:async';
 
-import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -15,6 +14,7 @@ import '/utils/speech_web.dart';
 
 // Mobile speech (opcional)
 import 'package:speech_to_text/speech_to_text.dart' as stt;
+import '../../features/repairs/data/repositories/repair_form_repository.dart';
 import 'widgets/repair_form_sections.dart';
 
 class RepairFormScreen extends StatefulWidget {
@@ -50,6 +50,7 @@ class _LocalePick {
 }
 
 class _RepairFormScreenState extends State<RepairFormScreen> {
+  final _repo = RepairFormRepository();
   final _title = TextEditingController();
   final _km = TextEditingController();
   final _desc = TextEditingController();
@@ -102,16 +103,6 @@ class _RepairFormScreenState extends State<RepairFormScreen> {
   String _pendingPartialText = '';
 
   String get _uid => FirebaseAuth.instance.currentUser!.uid;
-
-  CollectionReference<Map<String, dynamic>> get _repairsCol => FirebaseFirestore
-      .instance
-      .collection('users')
-      .doc(_uid)
-      .collection('customers')
-      .doc(widget.customerId)
-      .collection('vehicles')
-      .doc(widget.vehicleId)
-      .collection('repairs');
 
   @override
   void initState() {
@@ -470,9 +461,17 @@ class _RepairFormScreenState extends State<RepairFormScreen> {
       !_saving && !_sharing && _status.trim().toLowerCase() == 'terminada';
 
   DateTime? _parseDate(dynamic v) {
-    if (v is Timestamp) return v.toDate();
     if (v is DateTime) return v;
     if (v is String) return DateTime.tryParse(v);
+    if (v != null) {
+      final dynamicValue = v as dynamic;
+      try {
+        final date = dynamicValue.toDate();
+        if (date is DateTime) return date;
+      } catch (_) {
+        // Ignored: not a timestamp-like object.
+      }
+    }
     return null;
   }
 
@@ -499,34 +498,15 @@ class _RepairFormScreenState extends State<RepairFormScreen> {
   }
 
   Future<Map<String, dynamic>> _loadWorkshopProfile() async {
-    final snap = await FirebaseFirestore.instance
-        .collection('users')
-        .doc(_uid)
-        .get();
-    final data = snap.data() ?? {};
-    final profile = (data['profile'] as Map<String, dynamic>?) ?? {};
-    return {
-      'name': (profile['name'] ?? '').toString().trim(),
-      'owner': (profile['owner'] ?? '').toString().trim(),
-      'address': (profile['address'] ?? '').toString().trim(),
-      'phone': (profile['phone'] ?? '').toString().trim(),
-      'ruc': (profile['ruc'] ?? '').toString().trim(),
-    };
+    return _repo.loadWorkshopProfile(_uid);
   }
 
   Future<String> _resolveCustomerName() async {
-    final fromWidget = (widget.customerName ?? '').trim();
-    if (fromWidget.isNotEmpty) return fromWidget;
-
-    final snap = await FirebaseFirestore.instance
-        .collection('users')
-        .doc(_uid)
-        .collection('customers')
-        .doc(widget.customerId)
-        .get();
-    final data = snap.data() ?? {};
-    final fromDb = (data['name'] ?? '').toString().trim();
-    return fromDb.isEmpty ? 'Cliente' : fromDb;
+    return _repo.resolveCustomerName(
+      uid: _uid,
+      customerId: widget.customerId,
+      fallbackName: widget.customerName ?? '',
+    );
   }
 
   pw.Widget _pdfInfoLine(String label, String value) {
@@ -814,18 +794,16 @@ class _RepairFormScreenState extends State<RepairFormScreen> {
       'customerName': (widget.customerName ?? '').trim(),
       'vehicleId': widget.vehicleId,
       'vehicleTitle': widget.vehicleTitle,
-      'updatedAt': FieldValue.serverTimestamp(),
     };
 
     try {
-      if (widget.repairId == null) {
-        data['createdAt'] = FieldValue.serverTimestamp();
-        await _repairsCol.add(data);
-      } else {
-        await _repairsCol
-            .doc(widget.repairId)
-            .set(data, SetOptions(merge: true));
-      }
+      await _repo.saveRepair(
+        uid: _uid,
+        customerId: widget.customerId,
+        vehicleId: widget.vehicleId,
+        data: data,
+        repairId: widget.repairId,
+      );
 
       if (!mounted) return;
       Navigator.pop(context);
