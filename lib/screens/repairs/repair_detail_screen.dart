@@ -1,8 +1,9 @@
-import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 
+import '../../features/repairs/data/models/repair_model.dart';
+import '../../features/repairs/data/repositories/repairs_repository.dart';
 import 'repair_form_screen.dart';
 
 class RepairDetailScreen extends StatelessWidget {
@@ -11,8 +12,9 @@ class RepairDetailScreen extends StatelessWidget {
   final String vehicleId;
   final String vehicleTitle;
   final String repairId;
+  final RepairsRepository _repo = RepairsRepository();
 
-  const RepairDetailScreen({
+  RepairDetailScreen({
     super.key,
     required this.customerId,
     this.customerName,
@@ -23,16 +25,13 @@ class RepairDetailScreen extends StatelessWidget {
 
   String get _uid => FirebaseAuth.instance.currentUser!.uid;
 
-  DocumentReference<Map<String, dynamic>> _ref() {
-    return FirebaseFirestore.instance
-        .collection('users')
-        .doc(_uid)
-        .collection('customers')
-        .doc(customerId)
-        .collection('vehicles')
-        .doc(vehicleId)
-        .collection('repairs')
-        .doc(repairId);
+  Stream<RepairModel?> _repairStream() {
+    return _repo.watchRepairById(
+      uid: _uid,
+      customerId: customerId,
+      vehicleId: vehicleId,
+      repairId: repairId,
+    );
   }
 
   // ===== Formatters (Paraguay) =====
@@ -56,12 +55,23 @@ class RepairDetailScreen extends StatelessWidget {
     return _gsFmt.format(n); // mismo separador de miles
   }
 
-  String _date(dynamic ts, {bool withTime = false}) {
-    if (ts is Timestamp) {
-      final d = ts.toDate();
-      return withTime ? _dateTimeFmt.format(d) : _dateFmt.format(d);
-    }
-    return '';
+  String _date(DateTime? value, {bool withTime = false}) {
+    if (value == null) return '';
+    return withTime ? _dateTimeFmt.format(value) : _dateFmt.format(value);
+  }
+
+  Map<String, dynamic> _toInitial(RepairModel repair) {
+    return {
+      'title': repair.title,
+      'km': repair.km,
+      'description': repair.description,
+      'status': repair.status,
+      'labor': repair.labor,
+      'parts': repair.parts,
+      'total': repair.total,
+      'createdAt': repair.createdAt,
+      'updatedAt': repair.updatedAt,
+    };
   }
 
   Future<void> _delete(BuildContext context) async {
@@ -85,7 +95,12 @@ class RepairDetailScreen extends StatelessWidget {
 
     if (ok != true) return;
 
-    await _ref().delete();
+    await _repo.deleteRepair(
+      uid: _uid,
+      customerId: customerId,
+      vehicleId: vehicleId,
+      repairId: repairId,
+    );
 
     if (!context.mounted) return;
     Navigator.pop(context);
@@ -96,8 +111,8 @@ class RepairDetailScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
-      stream: _ref().snapshots(),
+    return StreamBuilder<RepairModel?>(
+      stream: _repairStream(),
       builder: (context, snap) {
         if (snap.hasError) {
           return Scaffold(
@@ -119,26 +134,26 @@ class RepairDetailScreen extends StatelessWidget {
           );
         }
 
-        final data = snap.data!.data();
-        if (data == null) {
+        final repair = snap.data;
+        if (repair == null) {
           return Scaffold(
             appBar: AppBar(title: Text('Reparación')),
             body: Center(child: Text('Reparación no encontrada')),
           );
         }
 
-        final title = (data['title'] ?? '').toString().trim();
-        final status = (data['status'] ?? 'Abierta').toString().trim();
-        final kmRaw = (data['km'] ?? '').toString();
+        final title = repair.title.trim();
+        final status = repair.status.trim();
+        final kmRaw = repair.km;
         final km = _kmText(kmRaw);
-        final desc = (data['description'] ?? '').toString().trim();
+        final desc = repair.description.trim();
 
-        final labor = _gs(data['labor']);
-        final parts = _gs(data['parts']);
-        final total = _gs(data['total']);
+        final labor = _gs(repair.labor);
+        final parts = _gs(repair.parts);
+        final total = _gs(repair.total);
 
-        final createdAt = _date(data['createdAt'], withTime: true);
-        final updatedAt = _date(data['updatedAt'], withTime: true);
+        final createdAt = _date(repair.createdAt, withTime: true);
+        final updatedAt = _date(repair.updatedAt, withTime: true);
 
         final statusLabel = status.isEmpty ? 'Abierta' : status;
 
@@ -174,7 +189,7 @@ class RepairDetailScreen extends StatelessWidget {
                         vehicleId: vehicleId,
                         vehicleTitle: vehicleTitle,
                         repairId: repairId,
-                        initial: data,
+                        initial: _toInitial(repair),
                       ),
                     ),
                   );

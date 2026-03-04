@@ -119,6 +119,34 @@ class RepairsRepository {
     return query;
   }
 
+  Stream<RepairModel?> watchRepairById({
+    required String uid,
+    required String customerId,
+    required String vehicleId,
+    required String repairId,
+  }) {
+    return RepairModel.collectionForUserVehicle(
+      _firestore,
+      uid,
+      customerId,
+      vehicleId,
+    ).doc(repairId).snapshots().map((snapshot) => snapshot.data());
+  }
+
+  Future<void> deleteRepair({
+    required String uid,
+    required String customerId,
+    required String vehicleId,
+    required String repairId,
+  }) {
+    return RepairModel.collectionForUserVehicle(
+      _firestore,
+      uid,
+      customerId,
+      vehicleId,
+    ).doc(repairId).delete();
+  }
+
   String _buildScopeKey(
     String uid,
     String customerId,
